@@ -102,17 +102,17 @@ Scheduler mechanism 必须通过 semantic capability gate。当前 upstream runt
 
 **Question:** 前面验证过的机制组合起来是否产生实际 serving gain，并且不损害普通短请求？
 
-保留三类 workload：
+本组包含三个分实验。Load scaling 是三组实验的共同控制维度，不单独拆成第四个实验。
 
-#### A. Long-context reuse
+#### Experiment 1. Long-context reuse serving
 
-验证项目最主要的 cache/state reuse scenario。
+验证项目最主要的 cache/state reuse scenario，观察机制组合后是否真正改善 throughput、TTFT 与 request completion time。
 
-#### B. Short-context
+#### Experiment 2. Short-context serving regression
 
-检查 hierarchical cache、I/O 和 scheduler optimization 是否引入 regression。
+在缺乏显著 long-context reuse 的普通短请求上检查 fixed overhead、serving-capacity regression 与 tail-latency regression。
 
-#### C. Mixed workload
+#### Experiment 3. Mixed workload serving
 
 同时包含：
 
@@ -121,17 +121,30 @@ Scheduler mechanism 必须通过 semantic capability gate。当前 upstream runt
 - different output lengths；
 - different cache-distance / locality patterns。
 
-系统配置按 mechanism chain 比较：
+Mixed workload 同时报告 overall 与 request-class-level performance，避免 aggregate throughput 掩盖 long-context / short-context 之间的 cross-class interference。
 
-1. baseline；
-2. hierarchical cache；
-3. fixed validated I/O optimization；
-4. validated scheduler optimization；
-5. full configuration。
+系统统一比较以下五种配置：
 
-主要指标：throughput、P50/P90/P99 TTFT、request completion time、TPOT 与 GPU utilization。
+1. **Baseline**；
+2. **Hierarchical Cache**；
+3. **Hierarchical Cache + I/O Optimization**；
+4. **Hierarchical Cache + Scheduler Optimization**；
+5. **Full Configuration**。
 
-只有在前面对应机制已经通过 capability/validity gate 时，才把该机制纳入 full configuration。
+配置 3 与配置 4 是 parallel attribution branches，不是严格的逐层累加关系。配置 3 使用 baseline/reference scheduler，配置 4 使用 baseline/reference I/O path。Full Configuration 才同时启用经过验证的 hierarchy、I/O 与 scheduler mechanisms。
+
+核心指标：
+
+- request / token throughput；
+- P50/P90/P99 TTFT；
+- request completion time；
+- GPU utilization。
+
+TPOT 或等价 decode-latency metric 在需要解释 output-length / decode interference 时作为辅助指标记录，不作为本组统一核心指标。
+
+只有在前面对应机制已经通过 capability/validity gate 时，才把该机制纳入 Full Configuration。
+
+详细设计位于 `experiments/end-to-end-serving/`。
 
 ---
 
@@ -162,6 +175,8 @@ A100 上已经存在且配置完全匹配的结果直接复用，只补齐必要
 模型维度只能支持 cross-model robustness 与 cache/state behavior correlation。两个模型之间的差异不能被解释为 attention architecture 的单因素因果效应。
 
 硬件维度重点分析 memory capacity、host-GPU transfer、memory bandwidth 与 compute capability 对结论的影响。
+
+该组目前保持 project-plan 状态。只有在前五组产生经过 validity gate 的结果，并冻结 representative-point selection rule 后，才建立具体实验目录和执行矩阵，避免根据后验结果挑选有利验证点。
 
 ## 3. Experimental dependency chain
 
@@ -214,6 +229,7 @@ Failed、negative、partial 和 unsupported results 不静默删除。
 - 不把两个模型的差异解释为单一 architecture causal effect。
 - 不复制原论文中的 hardware/model-dependent threshold 作为现代平台默认参数。
 - 不在看到 optimized result 后反向选择更有利的 workload 或 boundary point。
+- 不把相同 request rate 下 workload composition 或 output-length distribution 的变化解释为单一变量因果效应，除非同时控制 offered work / token volume 或提供 matched-load control。
 
 ## 6. Scope discipline
 
