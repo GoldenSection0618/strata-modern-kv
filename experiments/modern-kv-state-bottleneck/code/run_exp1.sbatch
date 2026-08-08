@@ -22,6 +22,7 @@ source "$HOME/yanglihan/env.sh"
 # disable it here. NOTE: VLLM_ATTENTION_BACKEND is NOT a recognized env var
 # in vLLM 0.26.0 (it logs "Unknown vLLM environment variable") - do not use it.
 export VLLM_USE_FLASHINFER_SAMPLER=0
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 DL_ROOT="$HOME/yanglihan/dl-stack"
 EXP_ROOT="$DL_ROOT/projects/strata-modern-kv/experiments/modern-kv-state-bottleneck"
