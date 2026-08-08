@@ -24,7 +24,7 @@
 
 在 SGLang 主路径中，`page size` 专指 `--page-size`，单位为 tokens/page。
 
-它决定 KV cache block 的 token granularity，并影响 prefix cache 能够匹配的完整 page 边界。正式结果必须记录 configured page size，而不是只记录诸如 small / medium / large 的标签。
+它决定 KV cache block 的 token granularity，并影响 prefix cache 能够匹配的完整 page 边界。正式结果必须记录 configured page size，而不是只记录 small / medium / large 的标签。
 
 ### 3.2 Hybrid-state granularity
 
@@ -101,12 +101,30 @@ Experiment 1 的共享 prefix cut points 必须包含与候选 page size 不完�
 
 ### 6.3 Read and write traffic
 
-Serving-level I/O analysis必须区分：
+Serving-level I/O analysis 必须区分：
 
 - CPU→GPU restore traffic；
 - GPU→CPU backup / write-back traffic。
 
-Experiment 2–4 以 CPU→GPU restore 为主要研究对象，但后台 write traffic 不能混入 restore bandwidth 或 stall 而不加区分。
+Experiments 2–4 以 CPU→GPU restore 为主要研究对象，但后台 write traffic 不能混入 restore bandwidth 或 stall 而不加区分。
+
+### 6.4 Attention-kernel confound
+
+Page size 本身可能改变 attention-kernel execution efficiency。SGLang 的 attention backend 也可能对 page size 有不同支持范围或性能特征。
+
+因此，任何 **跨 page size 的 serving latency / throughput comparison** 都不能把全部变化直接解释为 I/O effect。
+
+Experiment 2 必须为每个 serving-level page-size point提供 matched **GPU-resident hit / no-restore control**。同一 page size 下：
+
+```text
+CPU-resident restore run
+vs
+GPU-resident hit control
+```
+
+用于估计 restore-related penalty。这样 page size 对 attention kernel 本身的影响可以在同粒度 pair 内基本抵消。
+
+Experiments 3–4 在同一 page size 下比较 `direct` 与 `kernel`，因此 page-size-dependent compute behavior自然保持一致，但仍需固定 attention backend。
 
 ## 7. Metric definitions
 
@@ -126,19 +144,25 @@ reuse efficiency = effective reused tokens / logically reusable prefix tokens
 
 使用目标 CPU→GPU restore 的实际 payload bytes 与对应 transfer interval 计算。必须说明 measurement window 和 overlap accounting。
 
-### 7.4 Bandwidth utilization
+### 7.4 Matched reference bandwidth
+
+Primary reference 使用同一 hardware / NUMA / pinned-host-memory condition 下的大块连续 HtoD transfer，作为一组实验共享的 link/runtime reference。
+
+`direct` 与 `kernel` 的 paired comparison 使用同一个 primary reference，避免分别归一化到不同 backend 的自身峰值而隐藏绝对差异。
+
+Backend-specific large-transfer ceiling 可以作为 supplementary metric，但不能替代共同 reference。
+
+### 7.5 Bandwidth utilization
 
 ```text
 bandwidth utilization = observed sustained bandwidth / matched reference bandwidth
 ```
 
-Reference bandwidth 必须在同一 hardware、同一 host-memory condition、同一 transfer direction 下测量。
-
-### 7.5 Non-overlapped I/O stall
+### 7.6 Non-overlapped I/O stall
 
 只统计进入 serving critical path、没有被 computation overlap 隐藏的 restore stall。Raw transfer duration 不得直接当作 non-overlapped stall。
 
-### 7.6 Compute interference
+### 7.7 Compute interference
 
 GPU-assisted I/O 对模型计算的影响必须由 prefill / decode execution time、throughput 和 profiler evidence 联合支持。单独的 GPU utilization 上升不是 interference 证据。
 
