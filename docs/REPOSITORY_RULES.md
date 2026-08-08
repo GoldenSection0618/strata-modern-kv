@@ -7,7 +7,8 @@ This repository is an experimental research codebase. The main requirements are:
 - preserve a traceable experimental history;
 - make reported results reproducible;
 - keep generated artifacts and large model files out of Git history;
-- separate implementation changes from experimental conclusions.
+- separate implementation changes from experimental conclusions;
+- pin volatile model/runtime behavior whenever it affects a reported result.
 
 ## 2. Protected history
 
@@ -77,16 +78,20 @@ Do not rewrite published commits merely to obtain prettier commit history.
 
 Every experiment that contributes to a reported result should make it possible to recover:
 
-- model and model revision;
+- exact model identifier and model revision;
 - hardware platform;
-- software and dependency versions;
-- workload definition;
-- relevant runtime configuration;
+- GPU driver, CUDA/runtime, and serving-engine version or commit;
+- model precision or quantization mode;
+- workload definition and exact token lengths;
+- relevant runtime configuration and feature flags;
+- cache-residency mode and cache/state policy;
 - random seed when applicable;
 - raw measurement source;
 - processing or plotting procedure.
 
 A plotted number should be traceable back to raw measurements rather than being copied manually into plotting code.
+
+Features whose behavior is explicitly experimental or rapidly changing in the serving runtime must be validated on the pinned version before their measurements are interpreted as model behavior.
 
 ## 6. Experimental integrity
 
@@ -96,10 +101,13 @@ When results are unstable or anomalous:
 
 1. preserve the raw result;
 2. identify whether the run is invalid for a documented reason;
-3. rerun when appropriate;
-4. report meaningful variance or instability.
+3. record that reason in the run metadata;
+4. rerun when appropriate;
+5. report meaningful variance or instability.
 
 Negative results are part of the project evidence when they materially affect a claim.
+
+A configuration change made after inspecting results must be recorded. Do not silently tune thresholds, cache policies, or load points separately for different models in a way that changes the comparison question.
 
 ## 7. Generated and large files
 
@@ -114,7 +122,7 @@ Do not commit:
 - generated figures that can be reproduced automatically, unless a specific result snapshot needs to be preserved;
 - datasets that have an external canonical source or redistribution restriction.
 
-Store paths, download instructions, metadata, and small manifests instead.
+Store paths, download instructions, metadata, checksums, and small manifests instead.
 
 ## 8. Results organization
 
@@ -130,9 +138,17 @@ figures and tables
 
 Processing scripts should not overwrite raw measurements.
 
-When a result is used in a report or paper, preserve enough metadata to identify the exact experiment configuration that produced it.
+When a result is used in a report or paper, preserve enough metadata to identify the exact experiment configuration and raw runs that produced it.
 
-## 9. Configuration over hidden state
+## 9. Measurement semantics
+
+Do not replace measured runtime state footprint with a theoretical formula when the serving engine uses hybrid cache groups, allocator padding, checkpointing, or other implementation-specific layouts.
+
+Do not add raw transfer duration to computation time when asynchronous transfer overlaps with compute. A latency decomposition must distinguish transfer activity from non-overlapped I/O stall.
+
+Cross-model normalized metrics must retain the underlying absolute measurements so normalization cannot hide large differences in real workload or capacity.
+
+## 10. Configuration over hidden state
 
 Experimental parameters should live in version-controlled configuration or command-line arguments whenever practical.
 
@@ -141,11 +157,12 @@ Avoid relying on:
 - manually edited constants that are not recorded;
 - shell history as the only record of an experiment;
 - undocumented environment variables;
-- machine-local paths embedded in source code.
+- machine-local paths embedded in source code;
+- implicit cache contents left by a previous run.
 
 Machine-specific paths and credentials must stay outside Git.
 
-## 10. Secrets and credentials
+## 11. Secrets and credentials
 
 Never commit:
 
@@ -158,15 +175,17 @@ Never commit:
 
 If a secret is committed accidentally, removing it in a later commit is not sufficient. Treat it as compromised and rotate it.
 
-## 11. Documentation changes
+## 12. Documentation changes
 
 When an experiment design materially changes, update the corresponding documentation in the same development cycle.
 
-In particular, keep `docs/EXPERIMENT_PLAN.md` synchronized with:
+Keep `docs/EXPERIMENT_PLAN.md`, `docs/TECHNICAL_BASELINE.md`, and experiment-specific documentation synchronized with:
 
 - the questions being tested;
 - major experiment groups;
 - comparison baselines;
-- interpretation boundaries.
+- measurement semantics;
+- interpretation boundaries;
+- volatile runtime assumptions.
 
 The documentation describes the intended evidence. The code and raw measurements determine what was actually executed.
