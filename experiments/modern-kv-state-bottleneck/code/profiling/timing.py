@@ -47,7 +47,7 @@ def measure_ttft(
     Returns:
         TimingResult with all collected data
     """
-    from .gpu_monitor import GPUMonitor as _GM  # avoid circular import
+    from profiling.gpu_monitor import GPUMonitor as _GM  # avoid circular import
 
     # Snapshot before
     kv_before = stats_collector.collect().to_dict()

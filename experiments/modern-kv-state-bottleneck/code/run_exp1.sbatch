@@ -7,15 +7,14 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=01:00:00
-#SBATCH --output=/share01/hpc/humxlab_intern/yanglihan/logs/%x-%j.out
-#SBATCH --error=/share01/hpc/humxlab_intern/yanglihan/logs/%x-%j.err
+#SBATCH --output=/share01/hpc/humxlab_intern/yanglihan/logs/%%x-%%j.out
+#SBATCH --error=/share01/hpc/humxlab_intern/yanglihan/logs/%%x-%%j.err
 
 # Experiment 1: Context Length Scaling
 # Usage: sbatch --export=MODEL=qwen,CTX=4096,MODE=recompute run_exp1.sbatch
 
 set -euo pipefail
 source "$HOME/yanglihan/env.sh"
-module load miniforge3/24.11.2_1
 
 DL_ROOT="$HOME/yanglihan/dl-stack"
 EXP_ROOT="$DL_ROOT/projects/strata-modern-kv/experiments/modern-kv-state-bottleneck"

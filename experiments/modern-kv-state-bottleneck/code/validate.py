@@ -10,7 +10,7 @@ import logging
 import time
 from typing import Callable
 
-from ..workload.token_workload import TokenWorkload
+from workload.token_workload import TokenWorkload
 
 logger = logging.getLogger(__name__)
 

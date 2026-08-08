@@ -17,10 +17,10 @@ from typing import Any
 
 from transformers import AutoTokenizer
 
-from ..profiling.gpu_monitor import GPUMonitor
-from ..profiling.vllm_stats import VLLMStatsCollector
-from ..profiling.timing import measure_ttft, TimingResult
-from ..workload.token_workload import TokenWorkload, WorkloadSegment
+from profiling.gpu_monitor import GPUMonitor
+from profiling.vllm_stats import VLLMStatsCollector
+from profiling.timing import measure_ttft, TimingResult
+from workload.token_workload import TokenWorkload, WorkloadSegment
 
 logger = logging.getLogger(__name__)
 
