@@ -6,7 +6,7 @@ The objective is to re-evaluate the main systems claims behind Strata under mode
 
 The experiment suite is organized around causal questions rather than one-to-one figure reproduction. Each group must be broad enough to support a credible conclusion while avoiding repeated measurements that answer the same question.
 
-The project uses `KV/state` as an umbrella term. Attention KV, sliding-window/local KV, and recurrent/linear-attention state are separated whenever the runtime exposes them. Current model, runtime, hardware, and granularity facts are tracked in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md).
+The project uses `KV/state` as an umbrella term. Attention KV, sliding-window/local KV, and recurrent/linear-attention state are separated whenever the runtime exposes them. Current model, runtime, hardware, cluster-software, and granularity facts are tracked in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md).
 
 ## 2. Experiment groups
 
@@ -86,7 +86,7 @@ This group contains four experiments:
 3. **GPU-Assisted I/O Compensation**: at representative page-size operating points, compare the same logical restore workload under standard-copy and GPU-assisted I/O;
 4. **GPU Compute Cost and Net Benefit**: measure prefill/decode interference from GPU-assisted I/O and determine whether I/O stall reduction survives as an end-to-end benefit.
 
-The primary mechanism path is SGLang HiCache because it exposes an explicit `page_size` together with `direct` and `kernel` CPU-GPU I/O backends. The exact runtime build, attention backend, host-memory layout, write policy, and hybrid-state support must pass the group validity gate before serving-level results are reported.
+SGLang HiCache is the preferred **mechanism candidate** because it exposes an explicit `page_size` together with `direct` and `kernel` CPU-GPU I/O backends. It is not treated as already executable on the project cluster. A non-Docker CUDA-12-compatible build must first satisfy the cluster software/build gate in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md). The exact runtime build, attention backend, host-memory layout, write policy, and hybrid-state support must then pass the group validity gate before serving-level results are reported.
 
 Primary observations include:
 
