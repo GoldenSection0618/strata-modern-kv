@@ -34,7 +34,8 @@
 4. Qwen3.5 在作为 full-hierarchy target 时同时覆盖 attention KV 与 Gated DeltaNet recurrent state；
 5. Gemma 4 在作为 full-hierarchy target 时覆盖 pinned runtime 实际保留的 local/sliding-window 与 global-attention state groups；
 6. restore failure 不会被静默计为 CPU hit；
-7. paired runs 使用相同 cache policy、cache dtype 和 offloading backend。
+7. paired GPU-only / hierarchical runs 使用相同 prefix-cache policy、block/state policy、cache dtype、scheduler policy 和 GPU cache budget；
+8. CPU offloading backend 与其配置在所有 hierarchical runs 中固定并写入 metadata。
 
 Validation output 必须写入 run metadata，而不是只打印到终端。
 
@@ -87,7 +88,8 @@ CPU-GPU transfer activity 与 non-overlapped restore stall 必须区分。Raw tr
 - precision 与 cache dtype；
 - hierarchy validation status: full / partial / unsupported；
 - validated state groups；
-- cache/offload backend and policy；
+- prefix-cache/block/state policy；
+- CPU offload backend and policy when enabled；
 - GPU cache budget 与 CPU tier budget；
 - initial cache state；
 - workload trace identifier；
