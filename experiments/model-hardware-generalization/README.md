@@ -14,7 +14,7 @@
 
 本组不把模型差异直接解释为 attention architecture 的单因素因果效应。跨模型结果只支持 robustness conclusion，以及 cache/state behavior 与系统收益之间的关联分析。
 
-目前已完成 Experiments 1–2 的详细方案设计。Experiment 3 在最终 representative workload 与 execution contract 冻结后补充。
+Experiments 1–3 均已完成详细方案设计。
 
 ## Directory structure
 
@@ -24,7 +24,8 @@ model-hardware-generalization/
 ├── docs/
 │   ├── 00-common-conventions.md
 │   ├── 01-cross-model-mechanism-generalization.md
-│   └── 02-cross-hardware-conclusion-stability.md
+│   ├── 02-cross-hardware-conclusion-stability.md
+│   └── 03-end-to-end-generalization.md
 ├── code/
 │   └── README.md
 └── results/
@@ -34,6 +35,7 @@ model-hardware-generalization/
 - `docs/00-common-conventions.md`：本组统一比较口径、representative-point selection、normalization 与 validity requirements。
 - `docs/01-cross-model-mechanism-generalization.md`：Experiment 1 的详细实验方案。
 - `docs/02-cross-hardware-conclusion-stability.md`：Experiment 2 的 A100/L40 same-workload 与 matched-pressure 跨硬件稳定性实验方案。
+- `docs/03-end-to-end-generalization.md`：Experiment 3 的 `2 models × 2 GPUs` end-to-end robustness、representative workload 与 targeted attribution 实验方案。
 - `code/`：workload materialization、matched-run orchestration、profiling、validation、processing 与 plotting code。
 - `results/`：raw measurements、processed results、robustness matrix、figures、tables 与结论摘要。
 
@@ -59,16 +61,20 @@ Experiment 3
 | Qwen3.5-9B | reference / matched validation | representative validation |
 | Gemma 4 12B | reference / matched validation | representative validation |
 
-Experiment 1 固定 A100 40GB。Experiment 2 才引入 L40 48GB 作为硬件变量。Experiment 3 使用最终冻结的少量代表性 workload 完成四种组合的交叉验证。
+Experiment 1 固定 A100 40GB。Experiment 2 才引入 L40 48GB 作为硬件变量。Experiment 3 使用最终冻结的少量 representative workloads 完成四种组合的交叉验证。
+
+Experiment 3 的主矩阵以 Baseline 与 Full Configuration 为主，不机械重复所有中间 system configurations。只有在主结果出现异常、trade-off 或与前置机制预测不一致时，才执行 targeted attribution runs。
 
 ## Execution discipline
 
 所有实验遵循 [`docs/00-common-conventions.md`](docs/00-common-conventions.md) 和仓库根目录 [`docs/TECHNICAL_BASELINE.md`](../../docs/TECHNICAL_BASELINE.md)。
 
-Representative points 必须依据前置实验的预定义 selection rule 冻结，不能在看到跨模型或跨硬件结果后反向选择更有利的点。
+Representative points 与 representative workloads 必须依据前置实验的预定义 selection rule 冻结，不能在看到跨模型或跨硬件结果后反向选择更有利的点。
 
 跨模型比较优先使用相对自身 baseline 的 normalized effect 与 mechanism-level observable，而不是直接比较 absolute throughput。
 
 跨硬件比较同时保留 same-workload deployment behavior 与必要的 matched-pressure control。前者用于观察相同实际 workload 在不同平台上的 bottleneck shift，后者用于判断在相近 operating pressure 下 mechanism 本身是否保持稳定。
+
+End-to-End Generalization 同时报告 absolute serving performance 与 normalized Full-vs-Baseline effect。Mixed workload 必须保留 request-class-level performance，避免 aggregate metrics 掩盖 cross-class interference。
 
 如果某一模型或硬件组合无法通过 runtime/state capability gate，则对应结果标记为 `partial`、`unsupported` 或 `invalid`，不通过改变语义不同的配置强行补齐矩阵。
