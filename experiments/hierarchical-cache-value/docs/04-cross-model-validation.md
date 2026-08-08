@@ -2,257 +2,170 @@
 
 ## 1. 实验目标
 
-本实验用于验证 Experiments 1–3 得到的 hierarchical cache 结论在不同现代 hybrid 模型上是否保持稳定。
+本实验用于验证 Experiments 1–3 在 primary model 上得到的主要 hierarchical-cache 规律能否在第二个现代 hybrid 模型上复现。
 
-实验不重新进行完整的 GPU cache pressure sweep 或 prefix reuse sweep，而是从前述实验中选择具有代表性的 workload regime，在 Qwen3.5-9B 与 Gemma 4 12B 上进行 matched validation。
+Experiment 4 不重新执行完整 GPU cache-pressure sweep 或 prefix-reuse sweep。它只选择少量在前三个实验中预先定义的代表性 operating points，在第二个模型上进行 matched validation。
 
 本实验主要回答三个问题：
 
-1. hierarchical cache 的基础收益是否同时存在于两种不同现代模型上；
-2. cache pressure 和 prefix reuse 对 hierarchy 收益的影响方向是否具有跨模型稳定性；
-3. 两个模型的 hierarchy value region 是否存在明显差异，以及这些差异能否由实际 cache/state behavior 解释。
+1. GPU reusable-cache pressure 增加后 hierarchy 从低价值区进入有价值区的方向性规律是否跨模型成立；
+2. 在固定 capacity pressure 下，prefix reuse 增加后 hierarchy 收益开始出现的规律是否跨模型成立；
+3. 两个模型的收益幅度和机制链是否存在 model-dependent 差异。
 
-本实验只验证跨模型稳定性，不根据两个模型之间的性能差异直接声称 attention architecture 是差异产生的因果因素。
+本实验不根据两个模型的差异直接声称 attention architecture 是唯一因果因素。
 
-## 2. 实验对象
+所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
 
-实验分别使用：
+## 2. 实验对象与执行角色
 
-- Qwen3.5-9B；
-- Gemma 4 12B。
+Experiments 1–3 在一个 validated primary model 上完成完整 sweep。Experiment 4 在第二个模型上进行少量 A100 40GB matched validation。
 
-两个模型均保持各自原生的 cache/state 组织方式，不将其人为转换为统一的 dense-attention KV cache。
+默认角色为：
 
-实验关注的是每个模型在自身原生 serving path 下 hierarchical cache 是否有价值，而不是比较两个模型谁具有更高的绝对性能。
+- primary sweep candidate：Qwen3.5-9B；
+- secondary validation candidate：Gemma 4 12B。
 
-因此跨模型比较主要使用：
+该角色不是固定结论，而取决于 full-hierarchy runtime validation。
 
-- cache pressure regime；
-- reuse regime；
-- relative recomputation reduction；
-- relative TTFT benefit；
-- relative throughput gain。
+如果 Qwen3.5 无法验证 attention KV 与 Gated DeltaNet recurrent state 的完整 CPU restore，则不能把其 partial offload 结果作为 full-hierarchy primary sweep。此时可以由 Gemma 4 承担 primary sweep。只有当 Qwen3.5 后续通过完整 validation gate 时，它才能作为 second-model full-hierarchy validation；否则跨模型结论明确标记为 unsupported，而不是使用 partial hierarchy 填补结果。
 
-不直接使用绝对 cache size、TTFT 或 throughput 作为跨模型优劣判断。
+本实验只使用 text-only requests。
 
-## 3. 实验设计原则
+## 3. Representative points 的选择原则
 
-Experiment 4 不重新执行 Experiments 1–3 的全部参数组合。
+代表性点必须在查看 second model 的性能结果之前，由 Experiments 2 和 3 的 primary-model 结果与预先定义规则确定。
 
-前述实验已经分别研究：
+Experiment 4 至少包含三个 validation points。
 
-```text
-Experiment 1: hierarchy 是否存在基础收益
-Experiment 2: GPU cache pressure 如何影响收益
-Experiment 3: prefix reuse 如何影响收益
-```
+### V0: Low-value control
 
-Experiment 4 只选择能够代表这些结论的少量配置进行跨模型验证。
+V0 取自 Experiment 2 的 Low pressure region，并保持 Experiment 2 的固定 reuse 条件。
 
-代表性配置必须按照预先定义的规则选择，不能在观察第二个模型结果之后重新挑选有利实验点。
+该点用于验证在 GPU 可以覆盖主要 reusable working set 时，额外 CPU tier 的端到端收益应当较小。
 
-这样可以避免通过选择性配置人为制造跨模型一致性。
+V0 是 negative control，不要求 second model 获得完全相同的数值，只要求实际系统状态确实处于 low-pressure region。
 
-## 4. Representative Regime 选择
+### V1: Capacity value-onset validation
 
-本实验至少选择三个代表性 regime。
+V1 对应 Experiment 2 中 hierarchy 开始产生稳定端到端收益附近的 pressure region。
 
-### Regime A: Low-value control
+Second model 不强制使用与 primary model 相同的绝对 GPU cache GB 数值，而是通过 calibration 建立相似的系统状态：
 
-该配置代表 hierarchical cache 理论收益较低的区域。
+- 已出现稳定 reusable-state eviction；
+- active-request preemption 为 0；
+- GPU-only recomputation 已开始增加；
+- hierarchical 配置存在可验证 CPU-tier hit。
 
-配置满足：
+该点验证的是 **capacity pressure → hierarchy value onset** 的方向性规律。
 
-- GPU cache pressure 较低；
-- prefix reuse 较低或中等；
-- GPU-only 已经能够覆盖主要 reusable working set。
+### V2: Reuse value-onset validation
 
-该配置作为 negative control。
+V2 使用 Experiment 3 固定的 representative GPU pressure region，并选择 primary model 上 reuse benefit 开始稳定出现附近的 revisit level。
 
-实验预期 hierarchy 在该区域不会产生明显性能收益。
+Second model 使用相同的 workload construction rule：eligible revisit slots、request ordering、prefix length distribution 和 locality structure保持一致，只按相同定义调整 revisit fraction。
 
-### Regime B: Value onset
+该点验证的是 **prefix reuse opportunity → hierarchy value onset** 的方向性规律。
 
-该配置代表 Experiments 2 或 3 中 hierarchical cache 开始出现稳定收益的区域。
+### Optional V3: High-value stress point
 
-配置满足：
+如果实验成本允许，可以增加一个 high-pressure / high-reuse stress point，用于判断收益在更强 hierarchy demand 下继续增加、进入平台或受 restore stall 限制。
 
-- GPU cache 已经产生稳定 eviction；
-- 被驱逐状态存在实际 reuse；
-- hierarchical cache 能够获得稳定 CPU hit；
-- CPU-GPU traffic 尚未完全成为系统瓶颈。
+V3 不是完成 Experiment 4 的必要条件，也不能为了得到更漂亮的跨模型一致性而事后新增。
 
-该 regime 是 Experiment 4 最重要的验证点。
+## 4. 跨模型匹配原则
 
-它用于判断 hierarchical cache 从“没有必要”转变为“值得使用”的现象是否能够在两个模型上同时观察到。
+跨模型匹配采用 **observed operating regime matching**，而不是绝对参数匹配。
 
-### Regime C: High-value / high-pressure
+两个模型的 cache/state footprint、retention behavior 和 allocator layout 不同，因此相同 GPU cache GB 数值不代表相同 capacity pressure。
 
-该配置代表 hierarchy 具有较强使用动机的区域。
+每个 validation point 都需要报告 second model 的实际：
 
-配置满足：
+- GPU cache occupancy；
+- GPU hit / eviction volume；
+- CPU hit volume；
+- active-request preemption；
+- reusable working-set coverage 的可观测 proxy。
 
-- GPU cache 明显无法覆盖 working set；
-- prefix reuse 较高；
-- GPU-only 中存在明显 recomputation。
+只有这些指标与目标 regime 一致，该配置才被认为是有效 matched point。
 
-该配置用于观察两个模型在 hierarchy 需求较强时是否都能够从 CPU tier 获益，以及收益最终是否受到 CPU-GPU restore cost 限制。
+## 5. Workload 匹配
 
-## 5. Regime 的跨模型匹配方式
+两个模型使用相同结构的 text-only workload。
 
-两个模型不强制使用完全相同的绝对 GPU cache size。
+保持：
 
-不同模型的 cache/state footprint 和 retention behavior 不同。如果简单设置相同的 GPU cache GB 数量，两个模型实际承受的 cache pressure 可能完全不同。
+- 相同 request count；
+- 相同 prefix-group construction；
+- 相同 eligible revisit slots；
+- 相同 request ordering；
+- 相同 revisit fraction 定义；
+- 相同 output-length target；
+- 相同 offered-load regime。
 
-因此跨模型实验按照系统状态匹配，而不是按照绝对容量匹配。
+由于 tokenizer 不同，不要求 raw text 产生完全相同 token sequence。跨模型需要记录实际 token lengths，并尽可能保持 input/output token scale 和 reusable-prefix token proportion 可比。
 
-例如 Regime B 在两个模型上都应代表：
+如果 tokenization 导致实际 workload 偏离目标 regime，应重新生成匹配文本或调整 trace，而不是忽略差异。
 
-> GPU cache 已出现稳定 eviction，但尚未进入严重 thrashing。
+## 6. 对照配置
 
-Regime C 在两个模型上都应代表：
+每一个 validation point 都严格配对运行：
 
-> GPU cache 明显无法覆盖 active reusable working set。
+- **GPU-only**；
+- **GPU + CPU hierarchical cache**。
 
-GPU cache budget 可以根据 Experiment 2 的实际测量结果分别确定。
+两种 architecture 使用相同 second-model GPU cache budget、workload trace、offered load 和 scheduler policy。
 
-每个模型都需要报告该 regime 对应的真实 GPU hit、eviction 和 working-set coverage，证明两个配置处于可比较的 pressure region。
+CPU tier 保持足够容量，使 CPU eviction 不成为未控制变量。
 
-## 6. Prefix Reuse 的跨模型匹配
-
-两个模型使用相同结构的 workload trace。
-
-跨模型保持：
-
-- 相同的请求数量；
-- 相同的 prefix group structure；
-- 相同的 prefix reuse frequency；
-- 相同的 reused request proportion；
-- 尽可能一致的 input/output token scale。
-
-由于 tokenizer 和模型实现不同，不要求 raw text 编码后得到完全相同的内部表示。
-
-跨模型比较以实际测得的 reuse opportunity 和 reused token/state proportion 为准。
-
-这样可以保证比较的是相似的 workload reuse structure，而不是表面相同的文本输入。
-
-## 7. 对照配置
-
-每一个 representative regime 都分别运行两种 cache architecture。
-
-### GPU-only
-
-系统只使用 GPU cache。
-
-GPU eviction 后状态失效，后续重复访问需要重新计算。
-
-### GPU + CPU hierarchical cache
-
-GPU 使用与 GPU-only 相同的 cache budget。
-
-GPU eviction 后允许 reusable state 保存在 CPU tier，并在后续访问时恢复。
-
-最终实验矩阵为：
-
-```text
-Qwen3.5-9B
-├── Regime A
-│   ├── GPU-only
-│   └── Hierarchical
-├── Regime B
-│   ├── GPU-only
-│   └── Hierarchical
-└── Regime C
-    ├── GPU-only
-    └── Hierarchical
-
-Gemma 4 12B
-├── Regime A
-│   ├── GPU-only
-│   └── Hierarchical
-├── Regime B
-│   ├── GPU-only
-│   └── Hierarchical
-└── Regime C
-    ├── GPU-only
-    └── Hierarchical
-```
-
-Experiment 4 只完成少量代表性配置，不重新复制完整 parameter sweep。
-
-## 8. Cache Initial State
+## 7. Cache initial state
 
 主实验统一使用 warm-cache steady-state。
 
-每个 regime 在正式测量前执行与其 workload 相匹配的 cache population 阶段。
+每个 validation point 先执行匹配的 cache-population phase，并验证实际 residency/occupancy，然后进入正式测量。
 
-Warm-up 不计入正式结果。
+Cold-cache 已由 Experiment 1 独立研究，Experiment 4 不重复该维度。
 
-使用 warm steady-state 可以避免 cold-start initialization 对模型间比较产生额外干扰，并使实验重点集中于长期 serving 状态下 hierarchy 的稳定价值。
+## 8. Validity conditions
 
-Experiment 1 已经单独研究 cold-cache 与 warm-cache，因此本实验不重复该维度。
+每个 second-model validation run 必须满足：
+
+- full-hierarchy state restore 通过数值与 residency 验证；
+- GPU-only 与 hierarchical 的 GPU budget 完全一致；
+- active-request preemption 为 0；
+- CPU tier 不发生未控制 capacity eviction；
+- validation point 的实际 pressure / reuse state 与预定义 regime 匹配；
+- 配置选择发生在 second-model 性能结果分析之前；
+- partial hierarchy 不进入 full-hierarchy cross-model comparison。
+
+如果 second model 无法满足 full-hierarchy validation，则 Experiment 4 的结论为 runtime capability limitation，不用替代机制伪造跨模型结果。
 
 ## 9. 实验执行过程
 
-首先从 Experiments 2 和 3 的结果中按照预定义标准确定 Regime A、B、C。
+首先从 Experiments 2 和 3 的 primary-model结果中冻结 V0、V1、V2 的选择规则。
 
-随后分别在两个模型上建立对应的 matched pressure 和 reuse condition。
+随后在 second model 上进行 calibration，使每个 point 达到目标 observed regime。
 
-每个 regime 首先验证实际 workload 和 cache behavior 是否符合预期。
+每个 point 分别执行 GPU-only 与 hierarchical 配置，多次独立重复。
 
-需要确认：
+配对 architecture 的执行顺序交替或随机化。
 
-- actual prefix reuse；
-- GPU cache pressure；
-- GPU eviction；
-- GPU hit；
-- CPU hit opportunity。
-
-只有实际系统状态满足 regime 定义，该 run 才进入正式跨模型比较。
-
-每一个有效配置进行多次独立重复实验。
-
-GPU-only 与 hierarchical 使用完全相同的 workload trace。
-
-不同模型分别进行独立 warm-up 和 cache initialization。
-
-正式实验记录完整 runtime 和 workload metadata。
+所有 run 保存完整 metadata，包括 model revision、runtime commit、state-group validation status、GPU/CPU cache budget、workload identifier、actual token lengths、revisit fraction、pressure metrics 和 repetition index。
 
 ## 10. 核心测量指标
 
-### 10.1 Cache / State Footprint
-
-记录每个模型在代表性 workload 下的实际 cache/state footprint。
-
-能够分项时分别报告不同 state type。
-
-该指标用于解释为什么相同 workload structure 在两个模型上可能产生不同 GPU cache pressure。
-
-Experiment 4 不要求两个模型具有相同 state size。
-
-### 10.2 GPU Cache Hit 与 Eviction
+### 10.1 Cache / state behavior
 
 记录：
 
-- GPU cache hit；
-- GPU eviction；
-- GPU-resident reusable state。
+- cache/state footprint by state group when available；
+- GPU hit volume；
+- GPU eviction volume；
+- CPU hit volume；
+- full / partial restore status。
 
-这些指标用于验证两个模型是否确实处于预期的 Low-value、Value-onset 或 High-pressure regime。
+### 10.2 Recomputation
 
-### 10.3 CPU Cache Hit
-
-Hierarchical 配置记录 CPU cache hit。
-
-重点比较 CPU tier 对两个模型有效 reuse 的贡献。
-
-如果两个模型拥有相似 reuse workload，但 CPU hit 明显不同，则进一步结合各自 state footprint 和 GPU residency behavior 分析。
-
-### 10.4 Recomputation
-
-记录 GPU-only 与 hierarchical 配置下的 recomputation。
-
-跨模型主要比较：
+记录 GPU-only 与 hierarchical 配置的 recomputation，并计算 relative recomputation reduction：
 
 ```text
 relative recomputation reduction
@@ -262,23 +175,13 @@ relative recomputation reduction
 recompute_GPU-only
 ```
 
-相对指标比绝对计算时间更适合判断 hierarchy 是否在两个模型中发挥相同系统作用。
+### 10.3 Data movement
 
-### 10.5 CPU-GPU Traffic
+记录 CPU-GPU restore volume、transfer activity 和 non-overlapped restore stall。
 
-记录 hierarchical cache 引入的 CPU-GPU traffic。
+### 10.4 TTFT
 
-同时记录 CPU restore 所对应的有效 reused state。
-
-该结果用于判断不同模型中，为避免相同程度的 recomputation，需要支付多少额外 data movement cost。
-
-### 10.6 TTFT
-
-记录 GPU-only 与 hierarchical cache 的 TTFT。
-
-每个模型分别报告 median、P90 和 P99。
-
-跨模型主要比较 relative TTFT improvement：
+记录 median、P90 和 P99 TTFT，并计算：
 
 ```text
 relative TTFT improvement
@@ -288,203 +191,92 @@ relative TTFT improvement
 TTFT_GPU-only
 ```
 
-不使用两个模型之间的绝对 TTFT 差值作为 hierarchy 优劣判断。
+### 10.5 Throughput
 
-### 10.7 Throughput
-
-记录 steady-state throughput。
-
-跨模型主要比较：
+记录 steady-state throughput，并计算：
 
 ```text
 throughput gain
 =
-throughput_hierarchical
-/
-throughput_GPU-only
-- 1
+throughput_hierarchical / throughput_GPU-only - 1
 ```
 
-该指标用于判断 hierarchy 是否在两个模型上都能够把减少的 recomputation 转化为实际 serving capacity。
+绝对值与相对值同时保留。
 
-## 11. 第一层结果：方向一致性
+## 11. 第一层分析：方向一致性
 
-首先不比较收益大小，只检查结果方向。
+首先判断三个 representative points 的方向是否一致。
 
-对于三个 regime，分别判断两个模型是否表现为：
-
-| Regime | 预期现象 |
+| Point | 要验证的规律 |
 |---|---|
-| A | hierarchy 收益很小或不存在 |
-| B | hierarchy 开始产生稳定收益 |
-| C | hierarchy 收益进一步增强，或受到 transfer 限制 |
+| V0 | GPU reusable cache 充足时 hierarchy 收益有限 |
+| V1 | capacity pressure 增加后 hierarchy 开始产生收益 |
+| V2 | 在固定 pressure 下 reuse 增加后 hierarchy 开始产生收益 |
 
-如果两个模型都表现出相同的基本趋势，则说明 hierarchical cache value 随 cache pressure 和 reuse 改变的基本规律具有一定跨模型稳定性。
+如果 second model 在满足对应 observed regime 时呈现相同方向，则说明前三个实验的主要系统规律具有一定跨模型稳定性。
 
-这一结论比要求两个模型获得相同百分比的加速更加合理。
+不要求两个模型拥有相同百分比的收益。
 
-## 12. 第二层结果：收益大小比较
+## 12. 第二层分析：机制一致性
 
-在确认方向之后，再比较 hierarchy 的收益幅度。
-
-形成：
-
-> Regime → relative TTFT improvement
-
-和：
-
-> Regime → throughput gain
-
-两个模型分别绘制。
-
-如果两者趋势相同但收益大小不同，则结合：
-
-- cache/state footprint；
-- GPU hit；
-- CPU hit；
-- recomputation reduction；
-- restore traffic；
-
-解释差异来源。
-
-收益大小不同本身不代表某种 architecture 更适合 hierarchical cache。
-
-## 13. 第三层结果：机制一致性
-
-Experiment 4 最重要的分析不是只确认两条性能曲线是否相似，而是验证相同的机制链是否存在。
-
-对于每个模型分别检查：
+对于每个模型检查完整机制链：
 
 ```text
-GPU pressure / reuse increase
-            ↓
-more reusable state misses GPU
-            ↓
-CPU-tier hit increases
-            ↓
-recomputation decreases
-            ↓
-CPU-GPU traffic increases
-            ↓
-TTFT / throughput changes
+reusable-state pressure / revisit opportunity
+                ↓
+GPU miss or eviction
+                ↓
+validated CPU-tier hit
+                ↓
+avoided recomputation
+                ↓
+restore traffic / non-overlapped stall
+                ↓
+TTFT / throughput change
 ```
 
-如果两个模型都呈现这条基本因果链，则 hierarchy 的系统作用具有较强的跨模型证据。
+如果两个模型最终收益方向相同，但链条中的中间变量差异明显，则报告为 model-dependent mechanism strength，而不是只比较端到端加速比。
 
-如果某个模型在其中某个阶段发生中断，则需要明确指出其 bottleneck 所在位置。
+## 13. 结果判断逻辑
 
-## 14. 结果判断逻辑
+### 情况 A：V0、V1、V2 方向均一致
 
-### 情况 A：两个模型表现出一致 value region
+说明 hierarchical cache 的基础价值边界不是只存在于 primary model。Capacity pressure 与 reuse opportunity 对 hierarchy value 的方向性影响具有跨模型证据。
 
-如果两个模型均表现为：
+### 情况 B：方向一致但收益幅度不同
 
-- Low pressure / low reuse 下收益有限；
-- eviction 与 reuse 增加后 hierarchy 开始产生收益；
-- 高压力下收益继续增加或受到 transfer 限制；
+说明 hierarchy 的基本机制具有跨模型稳定性，但具体收益受 model-specific cache/state footprint、GPU residency、recomputation cost 和 restore behavior 影响。
 
-则可以得出：
+### 情况 C：某个 validation point 不一致
 
-> hierarchical cache 的基础价值并非只存在于单个模型，其收益主要受 GPU cache pressure、reuse opportunity 和 restore cost 的共同控制。
+首先检查 observed pressure、actual reuse、state-group coverage、restore stall 和 tokenization workload 是否真正匹配。
 
-### 情况 B：趋势一致，但收益大小明显不同
+只有排除这些系统性差异后，才能报告为 model-dependent result。仍然不能由两模型比较直接证明 attention architecture 是唯一原因。
 
-如果两个模型的 value onset 方向一致，但 TTFT 或 throughput gain 差异明显，则说明 hierarchical cache 的总体机制具有跨模型稳定性，而收益幅度具有 model-dependent 特征。
+### 情况 D：Second model 无法完成 full hierarchy
 
-此时需要使用实际 cache/state footprint、GPU residency 和 transfer behavior 解释差异。
+如果 runtime 无法验证 second model 的完整 state restore，则不做 full-hierarchy cross-model performance claim。
 
-不能仅凭模型名称或 attention 类型进行因果归因。
+该结果被记录为 runtime-support boundary，并保留 primary-model evidence。项目后续可以在 runtime 支持完善后重新完成 validation。
 
-### 情况 C：一个模型明显受益，另一个模型基本无收益
+## 14. 与项目级 Generalization 的关系
 
-如果在 matched workload regime 下只有一个模型获得明显收益，则需要首先检查：
+Experiment 4 只处理 **A100 上的 cross-model validation**。
 
-1. 两个模型实际 GPU cache pressure 是否真正匹配；
-2. CPU tier 是否实际缓存了可复用 state；
-3. 两个模型的 reusable state volume 是否相近；
-4. CPU-GPU restore 是否成为其中一个模型的主要瓶颈；
-5. runtime 是否完整支持对应模型的 cache/state restore path。
+项目第六组 Model and Hardware Generalization 直接复用这里已经完成的 A100 representative results，并只增加完成 2 × 2 model × hardware matrix 所需的 L40 representative runs。
 
-只有排除这些系统因素后，才能将结果报告为模型相关差异。
+相同 A100 配置不得为了“第六组实验”再重复运行一遍，除非 runtime、model revision 或其他关键条件已经改变，需要重新建立可比基线。
 
-仍然不能仅凭两种模型的比较证明差异由 attention architecture 单独导致。
+## 15. 实验边界
 
-### 情况 D：两个模型都几乎无收益
+本实验不进行完整 context-length sweep。
 
-如果即使在 High-pressure / High-reuse regime 下两个模型都没有明显 TTFT 或 throughput 收益，则说明在当前现代模型与平台上，hierarchical cache 至少在当前实现和 workload 范围内缺乏明显的端到端价值。
+本实验不进行完整 GPU cache-budget sweep。
 
-随后需要结合 CPU hit 和 recomputation reduction 区分：
+本实验不进行完整 prefix-reuse sweep。
 
-- reusable state 本身已经显著减少；
-- GPU cache 已能覆盖主要 reuse；
-- CPU restore cost 过高；
-- runtime hierarchy implementation 效率不足。
-
-这几种解释需要分别报告。
-
-## 15. 与 Experiments 1–3 的关系
-
-四组实验形成完整逻辑链：
-
-```text
-Experiment 1
-Hierarchical cache 有没有基础收益？
-        ↓
-Experiment 2
-收益在什么 GPU cache pressure 下出现？
-        ↓
-Experiment 3
-收益需要什么程度的 prefix reuse？
-        ↓
-Experiment 4
-上述规律能否跨现代模型保持稳定？
-```
-
-Experiment 4 不增加新的 workload 自变量。
-
-它只验证前三个实验得到的主要结论是否能够从一个模型推广到另一个模型。
-
-## 16. 实验边界
-
-本实验不进行完整的 context length sweep。
-
-本实验不进行完整的 GPU cache budget sweep。
-
-本实验不进行完整的 prefix reuse sweep。
-
-本实验不改变 scheduler strategy。
+本实验不改变 scheduler strategy，也不研究 cache-distance/locality effect。
 
 本实验不比较不同硬件平台。
 
-硬件差异留给后续独立的模型与硬件泛化实验处理。
-
-Experiment 4 只负责 cross-model validation。
-
-## 17. 最终结果组织
-
-Experiment 4 最终形成一张核心跨模型表格：
-
-| Regime | Model | GPU pressure | CPU-tier contribution | Recomputation reduction | TTFT improvement | Throughput gain |
-|---|---|---:|---:|---:|---:|---:|
-| A | Qwen3.5 | ... | ... | ... | ... | ... |
-| A | Gemma 4 | ... | ... | ... | ... | ... |
-| B | Qwen3.5 | ... | ... | ... | ... | ... |
-| B | Gemma 4 | ... | ... | ... | ... | ... |
-| C | Qwen3.5 | ... | ... | ... | ... | ... |
-| C | Gemma 4 | ... | ... | ... | ... | ... |
-
-同时形成一张核心图：
-
-> Representative workload regime → hierarchical cache relative benefit
-
-分别展示两个模型。
-
-最终结论应明确区分：
-
-1. 哪些规律在两个模型上都成立；
-2. 哪些收益幅度具有明显 model-dependent 特征；
-3. 哪些结果只能作为关联观察，不能归因于 attention architecture。
-
-本实验最终回答：
-
-> **Hierarchical context caching 在现代 hybrid 模型上的价值是否具有跨模型稳定性，以及其适用边界是否主要由 cache pressure、reuse 和 data movement cost 决定。**
+最终目标是验证 Experiments 1–3 的关键方向性结论是否能够从一个现代 hybrid model 推广到另一个，而不是重新复制前三组实验。
