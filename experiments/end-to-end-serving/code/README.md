@@ -10,9 +10,10 @@
 
 - deterministic request trace 生成；
 - long-context shared-prefix workload 构造；
-- 后续 short-context 与 mixed workload 构造；
+- short-context low-reuse workload 构造；
+- 后续 mixed workload 构造；
 - Baseline、Hierarchical Cache、I/O Optimization、Scheduler Optimization 与 Full Configuration 的统一运行入口；
-- cold-start 与 steady-state cache state 建立；
+- cold-start、clean initial state 与 steady-state cache state 建立；
 - offered-load scaling 与 saturation behavior 采集；
 - throughput、TTFT、request completion time 与 GPU utilization 采集；
 - cache hit、eviction、recomputation、CPU-GPU traffic、I/O stall 与 queueing 等辅助指标采集；
@@ -33,6 +34,19 @@ Experiment 1 的实现必须能够：
 7. 检测持续 queue accumulation、throughput plateau 与 latency amplification；
 8. 保存每次 run 的完整 metadata 与 validity status。
 
+## Experiment 2 requirements
+
+Experiment 2 的实现必须能够：
+
+1. 生成以独立 short-context requests 为主的 workload，并避免人为构造长共享 prefix；
+2. 控制多个 short-context input-length profiles 与 output-length profiles；
+3. 记录 actual reusable-prefix overlap，确认主 regression workload 没有意外形成明显 long-context reuse；
+4. 在统一 clean initial state 下对同一 trace 执行五种 system configurations；
+5. 对每个 short-context profile 执行多个 offered-load conditions；
+6. 同时记录 request throughput、token throughput、P50/P90/P99 TTFT 与 request completion time；
+7. 保留 scheduler queueing、CPU-tier activity、CPU-GPU data movement 与 GPU idle/stall 等 regression attribution 指标；
+8. 输出 Full Configuration 相对 Baseline 的 absolute measurements 与 relative deltas。
+
 ## Runtime validation
 
 正式实验入口不得只检查模型是否能够启动。
@@ -43,8 +57,9 @@ Experiment 1 的实现必须能够：
 - hierarchy / I/O / scheduler mechanism 没有发生未记录的 fallback；
 - paired runs 使用相同 GPU cache budget、generation settings 与 request trace；
 - configured arrival schedule 与实际 trace injection 一致；
-- cold-start 状态能够被重复建立；
-- steady-state reuse 能通过 observable cache/runtime behavior 确认；
+- cold-start 或 clean initial state 能够被重复建立；
+- Experiment 1 的 steady-state reuse 能通过 observable cache/runtime behavior 确认；
+- Experiment 2 的 actual reusable-prefix overlap 能够被记录并用于 workload validity check；
 - instrumentation failure 不会静默生成缺失或错误指标。
 
 Validation result 必须写入 run metadata。
@@ -65,7 +80,7 @@ Validation result 必须写入 run metadata。
 - reuse / revisit metadata；
 - reuse-distance summary；
 - workload class；
-- context-length point；
+- context-length or short-context-profile point；
 - offered-load condition。
 
 ## Run metadata
@@ -82,10 +97,11 @@ Validation result 必须写入 run metadata。
 - GPU / CPU cache budget；
 - scheduler policy；
 - trace identifier；
-- context-length point；
+- context-length or short-context-profile point；
 - offered-load condition；
 - achieved request rate；
 - cache initial state；
+- observed reusable-prefix overlap when applicable；
 - repetition index；
 - runtime capability status；
 - validity status 与 invalid reason。
@@ -96,7 +112,7 @@ Validation result 必须写入 run metadata。
 - Invalid / partial / unsupported runs 不删除。
 - 主 aggregation 只包含满足当前实验 validity requirements 的 runs。
 - P50 / P90 / P99 等统计量从 per-request raw records 计算，不手工录入。
-- Relative gain 必须保留对应 absolute measurement。
+- Relative gain / regression 必须保留对应 absolute measurement。
 - Saturation point 由统一规则从观测数据判定，不能为不同系统配置手工选择有利阈值。
 - Figure/table 只从 versioned processed data 生成。
 
