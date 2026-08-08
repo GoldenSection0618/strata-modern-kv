@@ -29,7 +29,7 @@ Representative points 从已经通过 validity gate 的前置实验中冻结，�
 - representative operating boundary；
 - representative end-to-end workload when applicable。
 
-Selection rule 与 point identifiers 必须在跨模型或跨硬件正式结果生成前写入 versioned configuration。
+Selection rule、point identifiers 与 representative workload identifiers 必须在对应 generalization optimized results 生成前写入 versioned configuration。
 
 不能根据 generalization run 的结果后验删除负结果或替换 representative point。
 
@@ -58,6 +58,8 @@ Token-level workload 在模型 tokenizer 下分别 materialize，并记录实际
 
 模型容量、state footprint 和 baseline saturation capacity 不同，因此 pressure/load 档位优先按相对 operating region 定义，而不是机械使用完全相同的绝对 cache bytes 或 requests/s。
 
+Generic model-family support 不满足实验 capability gate。Qwen3.5-9B 与 `google/gemma-4-12B-it` 都必须在 exact pinned runtime 上验证 target checkpoint execution 和目标 state path。
+
 ## 5. Hardware comparison rules
 
 Experiment 2 才把 A100 40GB 与 L40 48GB 作为主要变量。
@@ -76,7 +78,34 @@ GPU 型号与 nominal memory size 不能替代这些 metadata。
 
 硬件维度主要比较 bottleneck location、optimization direction 与 normalized effect。Absolute throughput 差异本身不构成 generalization failure。
 
-## 6. Normalization
+Hardware comparison 同时保留：
+
+- `same_workload`：相同 logical workload 下的 deployment behavior；
+- `matched_pressure`：只在必要时补充的相对 pressure / saturation control。
+
+两种 comparison type 必须使用不同 identifiers，并在结果中分开解释。
+
+如果 A100 与 L40 位于不同 host platform，则结论使用 platform-level comparison，不把全部差异归因于 GPU silicon。
+
+## 6. End-to-End comparison rules
+
+Experiment 3 使用 `2 models × 2 GPUs` 的完整组合，但不重新执行前置实验的完整 mechanism sweep。
+
+Primary matrix 使用：
+
+- Long-context reuse；
+- Short-context control；
+- Mixed workload；
+- Low / Medium / High operating regions；
+- Baseline / Full Configuration。
+
+Full Configuration 只包含已经通过前置 capability / validity gate 的 mechanisms。
+
+中间 configuration 只用于预定义触发条件下的 targeted attribution，不扩展为所有 workload 上的完整五配置矩阵。
+
+Mixed workload 必须同时保存 overall 与 request-class-level performance。Aggregate gain 不能掩盖 long-context 或 short-context class 的 material tail-latency regression。
+
+## 7. Normalization
 
 每个模型和硬件组合都保留 absolute measurements。
 
@@ -90,7 +119,7 @@ relative_gain = (optimized - baseline) / baseline
 
 任何 normalized result 必须可以回溯到对应 absolute baseline 与 optimized measurements。
 
-## 7. Workload matching
+## 8. Workload matching
 
 Paired comparison 必须冻结：
 
@@ -107,15 +136,17 @@ Paired comparison 必须冻结：
 
 不能把不同实际 work volume 下的性能差异直接解释为模型或硬件机制差异。
 
-## 8. Runtime and capability gate
+## 9. Runtime and capability gate
 
 所有 run 遵循仓库根目录 [`../../../docs/TECHNICAL_BASELINE.md`](../../../docs/TECHNICAL_BASELINE.md) 的 mandatory runtime validation gates。
 
-跨模型 comparison 只有在目标 state group、cache/hierarchy path、I/O path 和 scheduler mechanism 的语义已经验证时才进入对应 mechanism conclusion。
+跨模型 comparison 只有在 target checkpoint、目标 state group、cache/hierarchy path、I/O path 和 scheduler mechanism 的语义已经验证时才进入对应 mechanism conclusion。
 
 如果 capability 只在某一模型或某一硬件组合上成立，则结果明确标记 capability boundary，不能把缺失实现解释为机制失效。
 
-## 9. Repetition and uncertainty
+Full Configuration 只有在其组成 mechanisms 均通过当前 model × platform combination 的 capability gate 时才进入 Experiment 3 主结果。
+
+## 10. Repetition and uncertainty
 
 正式 configuration 在统一 warm-up 之后进行多次独立重复测量。
 
@@ -123,7 +154,7 @@ Paired runs 尽量使用相同 trace identifiers，并交替或随机化执行�
 
 主结果报告中心值、run-to-run variability 与必要 uncertainty summary。单次运行结果不用于形成 cross-model 或 cross-hardware robustness conclusion。
 
-## 10. Validity status
+## 11. Validity status
 
 每个 run 至少使用以下状态之一：
 
@@ -134,15 +165,28 @@ Paired runs 尽量使用相同 trace identifiers，并交替或随机化执行�
 
 Failed、negative、partial 与 unsupported results 保留 raw record，不静默删除。
 
-## 11. Interpretation categories
+`unsupported` 表示当前 capability 无法建立所需比较，不等于 mechanism 的负结果。
 
-最终 robustness conclusion 使用受限的方向性类别：
+## 12. Interpretation categories
+
+Mechanism-level robustness 使用：
 
 - `stable`：关键 bottleneck 与 optimization direction 在比较对象间保持一致；
 - `weakened`：机制仍存在，但 severity 或收益明显减弱；
 - `model_sensitive`：结果随模型明显变化；
 - `hardware_sensitive`：结果随硬件明显变化；
-- `boundary_case`：只有部分 operating region / combination 成立；
+- `boundary_case`：只有部分 operating region / combination 成立，或 boundary 明显移动；
 - `inconclusive`：测量精度、capability 或匹配条件不足以支持判断。
 
-这些类别必须由 absolute measurements、normalized effects 与 mechanism observables 共同支持。
+Experiment 3 的 end-to-end summary 可以进一步使用：
+
+- `stable_generalization`；
+- `model_sensitive`；
+- `hardware_sensitive`；
+- `boundary_case`；
+- `throughput_latency_tradeoff`；
+- `cross_class_tradeoff`；
+- `unsupported`；
+- `inconclusive`。
+
+这些类别必须由 absolute measurements、normalized effects 与 mechanism observables 共同支持。Trade-off category 不能被简单归入 positive system gain。
