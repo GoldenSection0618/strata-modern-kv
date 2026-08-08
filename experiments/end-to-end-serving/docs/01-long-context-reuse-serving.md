@@ -7,8 +7,8 @@
 本实验重点回答三个问题：
 
 1. 长共享 context 的重复访问是否能够减少重复 prefill / recomputation，并最终改善 serving performance；
-2. Hierarchical Cache、I/O Optimization 与 Scheduler Optimization 的收益是否能够逐步累积到完整系统；
-3. 当 request pressure 逐渐提高后，Full Configuration 是否能够同时改善 throughput 与 TTFT，而不是通过明显牺牲另一项指标换取局部收益。
+2. Hierarchical Cache、I/O Optimization 与 Scheduler Optimization 在完整 serving 中分别还有多少增量价值，以及它们同时启用后是否形成稳定的 Full Configuration 收益；
+3. 当 request pressure 逐渐提高后，Full Configuration 是否能够改善 serving capacity 与 TTFT，而不是通过明显牺牲另一项指标换取局部收益。
 
 本实验不重新证明 cache、I/O 或 scheduler 单个机制为什么有效。机制层面的因果验证由前述实验组完成，本实验只验证这些机制组合进入完整 serving pipeline 后是否仍然有效。
 
@@ -18,7 +18,7 @@
 
 实验使用具有明确 shared-prefix / long-context reuse 的 text-only request trace。
 
-每个 workload 由多个 shared-context groups 组成。每个 group 包含一个较长的共享 context，以及多个基于该 context 的独立请求。Group 内请求共享相同或高度重叠的 prefix，但 suffix / query 与生成结果保持独立。
+每个 workload 由多个 shared-context groups 组成。每个 group 包含一个较长的共享 context，以及多个基于该 context 的独立请求。Group 内请求共享相同或高度重叠的 prefix，但 suffix / query 与生成内容保持独立。
 
 不同 shared-context groups 之间保持独立，避免所有请求集中在单一热点 context，从而使实验能够同时观察 context reuse 与有限 cache capacity 下的真实竞争行为。
 
@@ -26,7 +26,7 @@
 
 同一 context 会在后续请求中再次出现，从而形成稳定可观测的 cache reuse。Request ordering 不采用只让相同 context 永远连续出现的理想化方式，而是保留代表性的 revisit distance，使结果不只反映极端最佳 locality。
 
-每个正式 workload 包含足够多的请求，使系统能够进入稳定运行阶段，并能够分别观察 cold-start 与 steady-state 行为。
+每个正式 workload 包含足够多的请求，使 cold-start 与 steady-state 都具有稳定、可重复的测量样本。
 
 ## 3. 系统配置
 
@@ -40,17 +40,19 @@
 
 Baseline 不启用本项目新增的 hierarchical cache、I/O 与 scheduler 优化，作为端到端参照。
 
-Hierarchical Cache 只启用经过前置验证的分层 reusable-state path，用于观察增加可保留 working set 后能否减少 recomputation。
+Hierarchical Cache 只启用经过前置验证的分层 reusable-state path，并保持 reference/baseline I/O 与 scheduler path。
 
-Hierarchical Cache + I/O Optimization 在相同 hierarchy 上启用前置实验中已经验证的 I/O path，用于观察更高效的数据移动能否把 cache reuse 进一步转化为 serving 收益。
+Hierarchical Cache + I/O Optimization 在相同 hierarchy 上启用前置实验中已经验证的 I/O path，并保持 reference/baseline scheduler。
 
-Hierarchical Cache + Scheduler Optimization 保持 hierarchy 与 I/O backend 固定，只加入经过验证的 scheduler mechanisms，用于观察 control-plane 优化对完整 serving 的贡献。
+Hierarchical Cache + Scheduler Optimization 在相同 hierarchy 上启用经过验证的 scheduler mechanisms，并保持 reference/baseline I/O path。
 
 Full Configuration 同时启用最终选定的 hierarchy、I/O 与 scheduler mechanisms，代表本项目的完整系统配置。
 
+配置 3 与配置 4 是 parallel attribution branches。结果不使用“逐层累积”假设解释，而分别判断 I/O 与 scheduler 的增量贡献，并用 Full Configuration 检查二者共同启用时的 interaction。
+
 ## 4. Cache 状态
 
-本实验同时观察 cold-start 与 steady-state。
+本实验同时观察 cold-start 与 steady-state，但两种状态使用独立、预定义的测量协议。
 
 ### Cold-start
 
@@ -58,13 +60,19 @@ Full Configuration 同时启用最终选定的 hierarchy、I/O 与 scheduler mec
 
 Cold-start 用于记录首次处理共享 context 的完整成本，并检查完整系统是否通过显著增加首次请求开销来换取后续收益。
 
+Cold-start 的 measurement boundary 在实验配置中固定，不根据不同系统配置的运行速度动态改变。
+
 ### Steady-state
 
-系统执行足够的共享 context 请求后进入稳定 reuse 阶段，并在确认 cache working set 已经建立后记录主要性能数据。
+Steady-state 使用固定的 cache-population / preconditioning trace 建立可复用 working set。
+
+所有 paired configurations 使用相同逻辑预处理请求和访问顺序。预处理阶段不进入正式性能统计。
+
+正式 measurement 在预先规定的逻辑边界开始，而不是在观察到某个配置“已经稳定”后才开始。测量开始前记录实际 GPU/CPU residency、cache occupancy 与 reuse readiness，用于验证目标状态确实建立成功。
 
 Steady-state 是本实验的主要分析阶段，因为本实验研究的是 long-context reuse serving，而不是单次首次 context processing。
 
-Cold-start 与 steady-state 结果必须分开报告，不能把初始 population cost 与后续 reuse benefit 混成单一平均值。
+Cold-start 与 steady-state 结果分开报告，不把 initial population cost 与后续 reuse benefit 混成单一平均值。
 
 ## 5. Load scaling
 
@@ -74,11 +82,11 @@ Cold-start 与 steady-state 结果必须分开报告，不能把初始 populatio
 
 中等负载条件用于观察资源竞争开始后，cache reuse、I/O 与 scheduler 优化能否降低 queueing 与 stall。
 
-高负载条件逐步接近系统饱和，用于比较不同配置的最大 serving capacity、tail TTFT 与 request completion behavior。
+高负载条件逐步接近系统饱和，用于比较不同配置的 serving capacity、tail TTFT 与 request completion behavior。
 
-所有系统配置使用相同逻辑 request trace 与相同 arrival schedule。不会因为某个配置运行更慢而改变后续请求内容、顺序或到达模式。
+正式 load grid 在 calibration 后冻结。所有 system configurations 使用相同 offered-load points、logical request trace 与 arrival schedule。
 
-当某个配置出现持续 queue accumulation、throughput 不再增长并伴随 latency 快速恶化时，将其视为进入饱和区域。饱和状态本身作为有效结果保留。
+当某个配置出现持续 queue accumulation、throughput 不再增长并伴随 latency 快速恶化时，将其视为进入 saturation region。不同配置可以在不同 offered-load point 饱和，但使用相同预定义判定规则。
 
 ## 6. 控制变量
 
@@ -90,13 +98,14 @@ Cold-start 与 steady-state 结果必须分开报告，不能把初始 populatio
 - precision 与 cache dtype；
 - context dataset 与 request trace；
 - input-length distribution；
-- output-length distribution；
+- output target / output-length distribution；
 - request arrival schedule；
-- GPU cache budget；
-- CPU-tier budget when applicable；
+- GPU reusable-cache budget；
 - generation settings；
 - batch / concurrency limits；
-- measurement window。
+- measurement rule 与 measurement window。
+
+所有启用 hierarchy 的配置保持相同 CPU-tier budget、host-memory policy 与 offload policy。
 
 实验主要改变 system configuration、context length 与 offered load。
 
@@ -106,9 +115,9 @@ Cold-start 与 steady-state 结果必须分开报告，不能把初始 populatio
 
 ### Throughput
 
-记录 steady-state 下单位时间完成的 requests 与 tokens，并明确 throughput accounting 口径。
+记录正式 measurement window 内的 request throughput 与 token throughput，并明确 throughput accounting 口径。
 
-该指标用于判断 long-context reuse 最终是否提高系统整体处理能力。
+两种 throughput 同时保留，可以避免不同 realized output length 使单一 request/s 或 token/s 指标产生误导。
 
 ### TTFT
 
@@ -118,7 +127,7 @@ P50 用于反映典型请求体验。P90 与 P99 用于判断 hierarchical cache
 
 ### Request Completion Time
 
-记录完整请求从到达到生成结束的 completion time distribution。
+记录完整请求从到达到生成结束的 completion-time distribution。
 
 该指标用于避免系统只改善 prefill / TTFT，却把成本转移到 decode 或后续排队阶段。
 
@@ -138,7 +147,8 @@ P50 用于反映典型请求体验。P90 与 P99 用于判断 hierarchical cache
 - CPU-GPU data movement；
 - non-overlapped I/O stall；
 - queueing time；
-- scheduler stall / idle behavior。
+- scheduler stall / idle behavior；
+- batch characteristics when relevant。
 
 这些指标用于解释 end-to-end performance，不作为本实验的独立主要结论。
 
@@ -148,15 +158,15 @@ P50 用于反映典型请求体验。P90 与 P99 用于判断 hierarchical cache
 
 每个 system configuration 首先完成统一的模型加载与 runtime warm-up，避免首次 kernel、allocator 与 initialization cost 污染正式数据。
 
-随后重新建立规定的 cold-cache 初始状态并执行固定 request trace，记录 cold-start 阶段。
+Cold-start runs 从统一空 cache 状态开始，并执行固定 cold-start trace。
 
-当系统进入可验证的稳定 cache reuse 阶段后继续执行相同 workload，记录 steady-state 数据。
+Steady-state runs 首先执行固定 preconditioning trace，验证目标 cache residency / occupancy 后，在预定义 measurement boundary 执行正式 trace。
 
-同一 workload point 的所有系统配置使用相同 request trace、seed 与 arrival schedule。
+同一 workload point 的所有系统配置使用相同 request trace、seed、arrival schedule 与 output target。
 
 每个配置进行多次独立重复测量。不同配置的执行顺序交替或随机化，降低机器长期状态变化造成的系统偏差。
 
-每个 run 保存完整 metadata，包括 experiment ID、system configuration、model/runtime/hardware、context-length point、offered load、cache initial state、trace identifier、repetition index 与 validity status。
+每个 run 保存完整 metadata，包括 experiment ID、system configuration、model/runtime/hardware、context-length point、offered request/token work、cache initial state、trace identifier、repetition index 与 validity status。
 
 ## 10. Validity conditions
 
@@ -165,8 +175,11 @@ P50 用于反映典型请求体验。P90 与 P99 用于判断 hierarchical cache
 - request trace 与目标 workload point 一致；
 - 目标 system configuration 的 mechanism semantics 已经过前置验证；
 - cache / hierarchy path 未发生未记录的 fallback；
-- GPU cache budget 与其他 paired configurations 保持一致；
+- GPU reusable-cache budget 与其他 paired configurations 保持一致；
+- 所有 hierarchy configurations 使用相同 CPU-tier budget 与 offload policy；
 - offered-load schedule 未因 runtime behavior 被修改；
+- cold-start 或 steady-state 初始状态通过 runtime observable behavior 验证；
+- measurement boundary 与预定义配置一致；
 - measurement window 完整；
 - 未发生破坏比较条件的 OOM、runtime failure 或 instrumentation failure。
 
@@ -180,7 +193,7 @@ P50 用于反映典型请求体验。P90 与 P99 用于判断 hierarchical cache
 
 主结果至少形成：
 
-1. throughput 随 offered load 的变化；
+1. request / token throughput 随 offered load 的变化；
 2. P50 / P90 / P99 TTFT 随 offered load 的变化；
 3. request completion time 随 offered load 的变化；
 4. GPU utilization 随 offered load 的变化；
@@ -197,17 +210,21 @@ P50 用于反映典型请求体验。P90 与 P99 用于判断 hierarchical cache
 
 ### 情况 B：Hierarchical Cache 已获得大部分收益
 
-如果 Hierarchical Cache 已经明显减少 recomputation，并取得大部分 TTFT / throughput 收益，而 I/O 与 scheduler 只带来较小增益，则说明现代模型/runtime 下主要价值来自扩大 reusable working set，原 Strata 的后续 I/O 或 scheduling bottleneck 已经减弱。
+如果 Hierarchical Cache 已经明显减少 recomputation，并取得大部分 TTFT / throughput 收益，而 I/O 与 scheduler 两个 parallel attribution branch 只带来较小增益，则说明现代模型/runtime 下主要价值来自扩大 reusable working set，原 Strata 的后续 I/O 或 scheduling bottleneck 已经减弱。
 
-### 情况 C：Cache reuse 明显，但端到端收益有限
+### 情况 C：I/O 与 Scheduler 的增量价值不同
+
+如果配置 3 和配置 4 表现明显不同，则分别结合 I/O stall、queueing 和 scheduler behavior 判断哪一类 bottleneck 在当前现代 serving stack 中仍然重要。不能将两者解释成固定的先后累加关系。
+
+### 情况 D：Cache reuse 明显，但端到端收益有限
 
 如果 cache hit / avoided recomputation 明显存在，但 TTFT 与 throughput 改善有限，则结合 CPU-GPU traffic、I/O stall、queueing 与 GPU utilization 判断 reuse benefit 是否被后续系统瓶颈抵消。
 
-### 情况 D：Throughput 提高但 tail latency 恶化
+### 情况 E：Throughput 提高但 tail latency 恶化
 
 如果 Full Configuration 提高 throughput，但 P99 TTFT 或 request completion time 明显恶化，则结果解释为 throughput-latency trade-off，不能写成无条件的整体性能提升。
 
-### 情况 E：现代 Baseline 已接近 Full Configuration
+### 情况 F：现代 Baseline 已接近 Full Configuration
 
 如果 Baseline 与 Full Configuration 在大多数 workload point 上接近，则进一步核对现代 runtime 是否已经包含相近的 cache、I/O 或 scheduler 能力。若确认存在，应把该结果解释为 Strata 类机制已部分进入现代 baseline，而不是简单判定实验失败。
 
