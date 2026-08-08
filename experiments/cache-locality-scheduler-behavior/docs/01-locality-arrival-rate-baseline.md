@@ -2,242 +2,271 @@
 
 ## 1. 实验目标
 
-本实验建立现代 hybrid LLM serving workload 下的 scheduler 基础性能画像。
+本实验建立现代 hybrid LLM serving workload 下的 baseline scheduler 性能画像。
 
-实验独立控制 request arrival rate 与 cache locality / reuse distance，观察不同 workload 条件下 cache reuse、delay hit、redundant prefill、queueing、I/O stall、TTFT 与 throughput 的变化。
+实验独立控制 request arrival rate 与 cache distance / reuse distance，观察不同 workload 条件下 delay hit、redundant prefill、host-loading pressure、queueing、I/O stall、TTFT 与 throughput 的变化。
 
 本实验只使用 baseline scheduler，不引入 delay-hit mitigation、balanced batching、bubble filling / stall hiding 或其他 scheduler optimization。
 
-本实验主要回答两个问题：
+本实验主要回答：
 
 1. Strata 所关注的 scheduler pathology 在现代 serving workload 中是否仍然存在；
-2. 这些问题主要出现在哪些 locality 与 load 组合下。
-
-实验结果用于选择 Experiment 2 的 representative workloads，并作为后续 scheduler ablation 的统一 baseline。
+2. delay-hit pressure 与 host-loading pressure 分别集中在哪些 cache-distance × load 区域；
+3. 哪些 representative workloads 值得进入 Experiment 2 做机制消融。
 
 所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
 
 ## 2. 实验变量
 
-本实验设置两个独立自变量。
-
 ### 2.1 Request arrival rate
 
-Request arrival rate 划分为四个负载等级。
+Arrival rate 划分为四个相对负载等级。
 
 | Load level | 定义 |
 |---|---|
 | Low | 系统明显未饱和，请求基本不形成持续排队 |
-| Medium | 系统存在稳定并发，但仍保留明显处理余量 |
-| High | 系统接近稳定吞吐上限，queueing 与资源竞争开始明显 |
-| Overload | offered load 略高于稳定处理能力，系统形成持续排队 |
+| Medium | 系统存在稳定并发，但仍保留处理余量 |
+| High | 系统接近稳定吞吐上限，但尚未形成持续 overload |
+| Overload | offered load 超过稳定处理能力并形成持续 backlog |
 
-四个等级不使用跨模型、跨硬件统一的绝对 request rate。
+四个等级不跨模型、跨硬件复用同一绝对 request rate。正式实验前对当前模型、硬件和固定 serving configuration 单独做 capacity calibration。
 
-正式实验前先对当前模型、硬件和 serving configuration 进行 capacity calibration，并根据稳定 throughput 与 queueing behavior 确定四个负载点。
+Overload 主要用于标定 saturation boundary，不作为 scheduler 优化价值的核心证据。
 
-Overload 条件用于识别 saturation 对指标的影响，并帮助区分 scheduler pathology 与纯容量不足。Overload 不作为判断 scheduler 优化价值的唯一依据。
+### 2.2 Cache distance
 
-### 2.2 Cache locality
+实验设置三种基础 request ordering。
 
-实验设置三种基础 locality workload。
-
-| Locality condition | 请求访问关系 | 作用 |
+| Condition | 请求访问关系 | 解释 |
 |---|---|---|
-| Min distance | 相同或相关 context 尽可能连续出现 | 构造高 locality |
-| Shuffle | 同一请求集合按固定随机顺序混合 | 构造中等 locality |
-| Max distance | 相同 context 的 revisit 尽可能分散 | 构造低 locality |
+| Min distance | 同一 context / prefix group 尽可能连续 | cache distance 最小，locality 最高 |
+| Shuffle | 同一 request set 按固定 seed 随机混合 | 普通无序 workload |
+| Max distance | 同一 context 的 revisit 尽可能均匀分散 | cache distance 最大，locality 最低 |
 
-三种 workload 使用完全相同的请求集合，只改变 request ordering 与 reuse-distance structure。
+三种 workload 使用完全相同的 request set。Context 内容、请求数量、prefix/context length distribution、output length distribution 和 theoretical reuse opportunity 保持一致。
 
-Context 内容、请求数量、context length distribution、output length distribution 和理论 reuse opportunity 在三种 locality 条件下保持一致。
+每条 trace 同时保存实际 reuse-distance distribution，最终分析不只依赖 Min/Shuffle/Max 标签。
 
-这种设计使 locality 变化与 workload 内容变化分离，并避免把“没有可复用内容”误判为“scheduler 没有及时利用已有复用机会”。
+## 3. 关键因果假设
 
-## 3. Workload 构造
+本实验不假设“locality 越差，所有 scheduler pathology 都越严重”。
 
-实验使用由多个 context / shared-prefix groups 组成的固定请求集合。
+Cache distance 会改变至少两类不同现象：
 
-每个 group 包含多个访问同一 context 或共享同一 reusable prefix 的请求，不同 group 之间保持独立。
+1. **Delay-hit pressure**。短 cache distance 让同一 context 的请求更容易在首次 miss 尚未 resolve 时聚集，因此可能增加 delay hit 和 redundant prefill。
+2. **Host-loading pressure**。长 cache distance 增加 reusable state 在再次访问前离开 GPU-ready 状态的机会。当固定 hierarchy 能从 CPU tier 恢复这些状态时，host restore 和 I/O stall 可能增加。
 
-请求集合在实验开始前冻结，并生成三种 locality ordering。
+Strata Figure 11 的历史结果正是这两个方向分离。Minimum cache distance 下 delay-hit mitigation 收益最明显；maximum cache distance 下 delay-hit 减弱，而 CPU DRAM cache loading 相关优化更重要。
 
-Min-distance ordering 将同组请求尽可能集中排列。Shuffle ordering 使用固定 seed 对同一请求集合进行随机化。Max-distance ordering 将同组 revisit 尽可能拉开，同时保持请求集合本身不变。
+本实验只把该结果作为 reference hypothesis。现代模型/runtime 可以得到不同结果。
 
-所有 ordering 均保存稳定 trace identifier，并记录实际 reuse-distance distribution。实验结果同时报告设定的 locality condition 与实际观察到的 reuse distance，避免只依赖 workload 标签进行解释。
+## 4. Workload 构造
 
-## 4. 实验矩阵
+实验使用多个 context/shared-prefix groups 构成固定 request set。
 
-主实验采用三种 locality 与四种 arrival-rate level 的完整交叉设计。
+每个 group 包含多个共享 reusable context 的请求，同时保留不同 suffix/query 和 output generation。不同 group 之间相互独立。
 
-| Locality \ Load | Low | Medium | High | Overload |
+请求集合在实验开始前冻结，然后生成 Min distance、Shuffle、Max distance 三种 ordering。
+
+每条 trace 保存：
+
+- request identifier；
+- context/prefix group；
+- arrival timestamp；
+- reuse distance；
+- input/output token length；
+- theoretical reusable volume；
+- seed/configuration hash。
+
+## 5. Cache / I/O 底座
+
+为了让 host-loading metrics 有明确含义，本实验使用一个在实验开始前冻结的 cache hierarchy 与 I/O backend。
+
+如果目标模型的 full CPU-resident state restore 已通过 validation gate，则主结果同时研究 delay hit 与 loading-related behavior。
+
+如果只能验证 partial hierarchy，则 host-loading、I/O-stall 与 balanced-batching 相关结果必须标记为 `partial`，不能解释为完整 hybrid-state behavior。
+
+如果当前模型/runtime 完全无法建立可靠 CPU hierarchy，本实验仍可以执行 cold-miss delay-hit profiling，但不对 host-loading operating region 做正式结论。此时 Experiment 2 的 loading-related workload 应切换到已验证的模型/runtime，或标记为 `unsupported`。
+
+## 6. 实验矩阵
+
+主实验采用三种 cache-distance condition 与四种 arrival-rate level 的完整交叉设计。
+
+| Cache distance \ Load | Low | Medium | High | Overload |
 |---|---:|---:|---:|---:|
 | Min distance | ✓ | ✓ | ✓ | ✓ |
 | Shuffle | ✓ | ✓ | ✓ | ✓ |
 | Max distance | ✓ | ✓ | ✓ | ✓ |
 
-主实验共包含 12 个 workload conditions。
+共 12 个 workload conditions。每个 condition 进行多次独立重复测量。
 
-每个 condition 执行多次独立重复测量。正式比较使用重复运行的统计结果，不使用单次 measurement 作为主要结论依据。
+## 7. 实验前 calibration
 
-## 5. 实验前 calibration
+首先固定模型、硬件、cache hierarchy、cache capacity、I/O backend 与 baseline scheduler。
 
-实验首先固定模型、硬件、cache hierarchy、cache capacity、I/O backend 与 baseline scheduler。
+在代表性 request set 上逐步提高 offered request rate，记录 achieved throughput、queueing delay 和 backlog status。
 
-系统在代表性 workload 上从低 offered load 开始逐步提高 request arrival rate，并记录 achieved throughput、queueing delay 和系统是否形成持续 backlog。
+根据系统从明显未饱和、稳定并发、接近稳定吞吐上限到持续 backlog 的变化确定 Low、Medium、High 与 Overload。
 
-Calibration 根据系统从明显未饱和、正常并发、接近稳定吞吐上限到持续排队的变化确定 Low、Medium、High 与 Overload 四个 load point。
+Calibration 只用于冻结 load points，不进入 locality/cache-distance 主结论。
 
-Calibration 只用于确定实验工作区间，不进入 locality 主结论。
+## 8. 正式实验流程
 
-如果不同模型或硬件的稳定处理能力明显不同，则分别完成 calibration，并保持相同的相对负载定义。
+每轮实验恢复一致的初始 serving 状态，并完成不计入正式统计的一次性 runtime initialization。
 
-## 6. 正式实验流程
+系统按冻结的 request trace 和目标 arrival-rate condition 发送请求。
 
-每轮实验首先恢复一致的初始 serving 状态，并完成不计入正式统计的一次性 runtime initialization。
+12 个条件中保持以下内容一致：
 
-实验加载预先冻结的 request trace，并按照目标 locality ordering 与 arrival-rate condition 发送请求。
-
-模型、硬件、cache hierarchy、cache capacity、I/O backend、baseline scheduler、请求集合和 token-length distribution 在 12 个 workload conditions 中保持不变。
-
-每个 run 覆盖足够长的稳定 serving 区间。初始化阶段与结束阶段不进入主性能聚合。
-
-不同 workload condition 的执行顺序交替或随机化，避免机器温度、长期负载和集群状态变化系统性偏向某个 condition。
-
-每次 run 保存 workload identifier、locality condition、reuse-distance summary、offered/achieved request rate、repetition index 和 validity status。
-
-## 7. 核心观测指标
-
-### 7.1 Cache / scheduler behavior
-
-实验记录 realized cache hit / reuse、delay hit 与 redundant prefill。
-
-这组指标用于判断已有 reuse opportunity 是否被 baseline scheduler 正确利用，以及 locality 恶化后是否产生更多重复计算或延迟命中。
-
-### 7.2 Waiting and stall behavior
-
-实验记录 queueing delay 与 I/O stall。
-
-这组指标用于区分请求等待、cache/state movement 和其他 serving stall 对 TTFT 的影响。
-
-### 7.3 User-visible performance
-
-实验记录 TTFT distribution 与 achieved throughput。
-
-TTFT 至少保留中位数与 tail latency，避免平均值掩盖高负载下少量请求的严重等待。
-
-Throughput 使用实际完成请求或等价的稳定 serving 输出定义，并同时记录 offered 与 achieved request rate。
-
-## 8. 分析一：固定 arrival rate 比较 locality
-
-分析在相同 load level 下比较 Min distance、Shuffle 与 Max distance。
-
-该分析检查 locality 变差后 realized cache reuse 是否下降、delay hit 是否增加、redundant prefill 是否增加，以及这些变化是否进一步传导到 queueing、I/O stall、TTFT 和 throughput。
-
-如果 scheduler-level pathology 随 reuse distance 增大而稳定增强，并同步出现端到端性能恶化，则说明 request ordering 与 cache locality 仍然是现代 serving 系统中的有效 control-plane 变量。
-
-如果 locality 变化明显改变 cache behavior，但端到端性能基本不变，则说明当前系统仍具有足够余量吸收这些开销，后续 scheduler optimization 的实际价值需要在更高 load 下判断。
-
-## 9. 分析二：固定 locality 提高 arrival rate
-
-分析在同一 locality condition 下比较 Low、Medium、High 与 Overload。
-
-该分析检查低负载下可以被系统余量吸收的 scheduler pathology 是否随着系统接近饱和而被放大。
-
-重点观察 delay hit、redundant prefill、queueing delay、I/O stall 与 TTFT 是否在 High load 附近出现明显变化，以及 achieved throughput 是否开始偏离 offered load。
-
-Overload 结果单独解释。Overload 中持续 backlog 本身会显著增加 queueing，因此不能把所有性能下降直接归因于 locality 或 scheduler pathology。
-
-## 10. 分析三：检查 locality × load 交互作用
-
-分析重点比较以下四类 workload region：
-
-- high locality + low load；
-- low locality + low load；
-- high locality + high load；
-- low locality + high load。
-
-该分析判断 locality 的影响是否随着系统负载提高而放大。
-
-如果低 locality 在 Low load 下影响有限，但在 High load 下显著增加 delay hit、redundant prefill 或 queueing，并最终恶化 TTFT / throughput，则说明 scheduler optimization 的价值集中在特定 locality × load regime，而不是所有 workload。
-
-如果 locality 与 load 基本呈独立影响，则后续 Experiment 2 分别选择 locality-sensitive 与 load-sensitive representative points，而不强行解释为交互效应。
-
-## 11. 控制条件
-
-除 locality 与 arrival rate 外，其余主要条件保持固定。
-
-固定条件包括：
-
-- model identifier 与 revision；
-- hardware platform；
-- precision 与 cache dtype；
-- cache hierarchy；
-- GPU/CPU cache capacity；
-- cache/page policy；
+- model revision；
+- hardware；
+- precision/cache dtype；
+- cache hierarchy 与 capacity；
 - I/O backend；
-- baseline scheduler implementation；
+- baseline scheduler；
 - request set；
-- context/input length distribution；
-- output length distribution；
+- token-length distribution；
 - theoretical reuse opportunity。
 
-本实验不同时 sweep cache capacity、page granularity、GPU-assisted I/O 或 hierarchical-cache policy。这些变量由其他实验组独立研究。
+不同 condition 的运行顺序交替或随机化。每个 run 保存 calibration identifier、trace identifier、offered/achieved request rate、actual reuse-distance summary、repetition index 与 validity status。
 
-## 12. 结果组织
+## 9. 核心指标
 
-Experiment 1 至少形成以下结果：
+### 9.1 Delay-hit / reuse behavior
 
-1. locality × arrival rate 的 delay-hit surface；
-2. locality × arrival rate 的 redundant-prefill surface；
-3. locality × arrival rate 的 queueing-delay / I/O-stall summary；
-4. locality × arrival rate 的 TTFT summary；
-5. locality × arrival rate 的 achieved-throughput summary；
-6. actual reuse-distance distribution 与设定 locality condition 的一致性检查；
-7. representative workload selection table，供 Experiment 2 使用。
+记录：
 
-结果至少保留一组 scheduler-level pathology 图和一组 user-visible performance 图，使后续机制消融能够回到同一 baseline surface 上解释。
+- delay-hit count / affected request volume；
+- redundant prefill / recomputation；
+- realized cache reuse；
+- same-context overlap when observable；
+- cache resolve time when observable。
+
+### 9.2 Host-loading behavior
+
+在 full/partial hierarchy 状态允许时记录：
+
+- GPU-resident hit；
+- CPU-resident hit；
+- host restore volume；
+- duplicate restore activity；
+- non-overlapped I/O stall。
+
+### 9.3 User-visible performance
+
+记录：
+
+- queueing delay distribution；
+- P50/P90/P99 TTFT；
+- achieved throughput；
+- TPOT 或等价 decode metric when available。
+
+Offered load 与 achieved load 同时保存，避免在接近 saturation 时误读 throughput。
+
+## 10. 分析一：固定 arrival rate 比较 cache distance
+
+在相同 load level 下比较 Min distance、Shuffle 与 Max distance。
+
+分析不预设所有指标具有同一方向。重点分别判断：
+
+- Min distance 是否形成更高 same-context overlap、delay hit 和 redundant work；
+- cache distance 增大后 delay hit 是否下降；
+- cache distance 增大后 CPU-resident hit / host restore / I/O stall 是否上升；
+- 这些 scheduler-level变化是否传导到 TTFT 和 throughput。
+
+如果实际结果与 Strata reference direction 不一致，则以当前 measurement 为准，并进一步检查现代 cache policy、hybrid-state layout 或 runtime coordination 是否改变了机制。
+
+## 11. 分析二：固定 cache distance 提高 arrival rate
+
+在同一 ordering 下比较 Low、Medium、High 与 Overload。
+
+重点判断 arrival pressure 是否放大已有 pathology。
+
+对于 Min distance，重点观察更高 request rate 是否增加首次 miss resolve window 内的 same-context overlap 与 delay hit。
+
+对于 Shuffle / Max distance，重点观察更高 load 是否把 host restore 与 batch imbalance 放大为 non-overlapped I/O stall。
+
+Overload 单独解释。持续 backlog 导致的 queueing 不能直接归因于 scheduler pathology。
+
+## 12. 分析三：cache distance × load interaction
+
+本实验不把“低 locality + 高 load”预设为唯一最差区域。
+
+需要分别形成至少两张 mechanism-specific surface：
+
+1. `cache distance × load → delay hit / redundant work`；
+2. `cache distance × load → host restore / I/O stall`。
+
+然后再检查两类 pathology 如何影响 TTFT / throughput。
+
+这种设计允许出现：
+
+- Min distance + High load 为 delay-hit-dominated；
+- Max distance + High load 为 loading-dominated；
+- Shuffle + High load 同时存在多种压力；
+- 某些现代 runtime 下三者差异都很弱。
 
 ## 13. Representative workload selection
 
-Experiment 2 不重复全部 12 个 workload conditions。
+Experiment 2 不重复全部 12 个 conditions。
 
-Experiment 1 完成后，根据 baseline pathology 与端到端性能结果选择少量 representative workloads。
+Experiment 1 完成后，按照预先固定的规则选择少量 representative workloads：
 
-Representative points 至少覆盖一个 scheduler pathology 很弱的 control point、一个 locality-sensitive point 和一个在高负载下 pathology 明显的 stress point。
+- **W0 Control**：稳定区域中 pathology 很弱的 control point；
+- **W1 Delay-hit-sensitive**：delay hit / redundant prefill 明显，优先来自短 cache distance 和较高但稳定的 load；
+- **W2 Loading-balance-sensitive**：host loading 明显、batch load/compute imbalance 可观察且 delay hit 不占主导；
+- **W3 Residual-stall-sensitive**：存在明显 residual I/O stall / GPU bubble 的 workload。
 
-Representative-point selection rule 在运行 Experiment 2 前冻结，并记录对应 Experiment 1 run identifiers。后续不能根据 scheduler optimization 的最终收益反向挑选 baseline workload。
+如果 Experiment 1 无法找到满足某一角色的 workload，则不人为制造该角色，直接记录 `not observed`，对应 Experiment 2 component 的适用性结论相应收缩。
 
-## 14. 结果判断逻辑
+Selection rule 在运行任何 optimized scheduler 前冻结，并保存对应 baseline run identifiers。
 
-### 情况 A：Low locality 在高负载下显著恶化
+## 14. 结果输出
 
-Delay hit、redundant prefill 或 queueing 随 reuse distance 增大而上升，并在 High load 下明显传导到 TTFT / throughput。
+Experiment 1 至少形成：
 
-该结果说明现代 workload 中仍存在明确的 scheduler optimization space，Experiment 2 继续验证具体机制贡献。
+1. 三种 ordering 的实际 reuse-distance distribution；
+2. cache distance × arrival rate 的 delay-hit / redundant-work surface；
+3. cache distance × arrival rate 的 host-restore / I/O-stall surface，在 hierarchy capability 允许时；
+4. queueing-delay summary；
+5. P50/P90/P99 TTFT summary；
+6. offered vs achieved throughput summary；
+7. representative workload selection table。
 
-### 情况 B：Cache behavior 变化明显，但端到端影响有限
+## 15. 结果判断逻辑
 
-Locality 改变了 hit、delay hit 或 redundant prefill，但 TTFT / throughput 基本稳定。
+### 情况 A：短 distance 下 delay hit 明显
 
-该结果说明 scheduler pathology 存在，但当前系统资源余量或 overlap 能够吸收其成本。后续消融重点检查更高负载或 stall-sensitive workload，而不能直接声称 scheduler 优化具有明显系统收益。
+Min distance 在 Medium/High stable load 下产生更多 delay hit 与 redundant work，并传导到 TTFT 或 throughput。
 
-### 情况 C：Locality 对 scheduler-level 与 end-to-end 指标都影响很弱
+该结果说明现代 runtime 中仍存在 Strata-style delay-hit optimization space。
 
-三种 locality ordering 在多数稳定负载区间下表现接近。
+### 情况 B：长 distance 主要暴露 host loading
 
-该结果说明 Strata 所强调的 locality-sensitive scheduler problem 在当前模型/runtime/workload 中已经弱化。后续 scheduler 实验缩小范围，并把“收益边界已经收缩”作为有效结论。
+Shuffle/Max distance 的 delay hit 较弱，但 CPU-resident restore 与 non-overlapped I/O stall 增加。
 
-### 情况 D：只有 Overload 出现明显差异
+该结果说明 scheduler value 更可能来自 balanced batching / stall hiding，而不是 delay-hit mitigation。
 
-Low、Medium 与 High 条件基本稳定，明显恶化只出现在持续 backlog 的 Overload 条件。
+### 情况 C：内部 pathology 存在但端到端影响有限
 
-该结果不足以证明 locality-aware scheduler 在正常 serving 区域具有价值。Overload 结果主要用于确定系统容量边界，不作为 scheduler 优化必要性的核心证据。
+Delay hit 或 host loading 指标变化明显，但 TTFT / throughput 基本稳定。
 
-## 15. 实验边界
+该结果说明当前系统余量或 overlap 可以吸收该成本，不能据内部指标直接声称 scheduler 具有显著 serving benefit。
 
-本实验只定位 baseline scheduler 在 locality × load space 中的 pathology。
+### 情况 D：只有 Overload 出现明显恶化
 
-本实验不比较不同 scheduler mechanism，不研究 scheduler optimization 的相对收益，也不对 delay-hit mitigation、balanced batching 或 stall hiding 做因果归因。
+稳定区域内差异较弱，只有持续 backlog 后出现明显 queueing / TTFT 恶化。
 
-这些问题由 Experiment 2 及后续实验处理。
+该结果不足以证明正常 serving 区域需要额外 scheduler optimization。
+
+### 情况 E：cache distance 影响整体很弱
+
+三种 ordering 在稳定 load 下的 delay hit、loading stall 与端到端性能都接近。
+
+该结果说明 Strata 的 cache-distance-sensitive scheduler bottleneck 在当前 model/runtime/workload 中已明显弱化。
+
+## 16. 实验边界
+
+本实验只定位 baseline scheduler 的 pathology，不进行 scheduler mechanism attribution。
+
+Delay-hit mitigation、balanced batching 与 stall hiding 的因果贡献由 Experiment 2 处理。Same-context burst 的专门压力测试由 Experiment 3 处理。最终 operating region 由 Experiment 4 汇总。
