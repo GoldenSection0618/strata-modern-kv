@@ -1,31 +1,44 @@
 # Page Granularity and GPU-Assisted I/O
 
-本目录用于评估现代 LLM serving 中 page granularity 对 cache reuse 与 CPU→GPU I/O efficiency 的影响，并验证 GPU-assisted I/O 是否仍能缓解小粒度 cache 带来的 fragmented transfer 问题。
+本目录评估现代 LLM serving 中 cache page granularity 对 prefix reuse 与 CPU→GPU I/O efficiency 的影响，并验证 GPU-assisted I/O 是否能够修复小粒度 page 带来的 transfer inefficiency，同时保持可接受的 GPU compute cost。
 
-本部分围绕一条完整因果链展开：
+本组围绕以下因果链展开：
 
 ```text
 page size
     ↓
-cache reuse efficiency
+effective prefix reuse
     ↓
-I/O fragmentation and bandwidth efficiency
+actual transfer fragmentation / I/O efficiency
     ↓
 GPU-assisted I/O compensation
     ↓
-GPU computation interference and end-to-end benefit
+GPU computation interference
+    ↓
+end-to-end net benefit
 ```
+
+## Runtime scope
+
+主路径使用 **SGLang HiCache**，因为当前 HiCache 同时提供：
+
+- `--page-size`；
+- `--hicache-io-backend direct`；
+- `--hicache-io-backend kernel`；
+- explicit host-memory layout 与 write policy controls。
+
+`direct` 作为 standard CUDA-copy baseline，`kernel` 作为 GPU-assisted I/O path。
+
+所有 serving-level 结果都以 [`docs/00-common-conventions.md`](docs/00-common-conventions.md) 的 runtime capability gate 为前提。目标 hybrid model 如果不能验证完整 cache/state restore，则只能保留 mechanism-level / partial evidence，不能报告为完整 modern-hybrid serving result。
 
 ## Scope
 
-这一部分包含四个实验：
+本部分包含四个实验：
 
-1. **Page Size vs. Cache Reuse**：只改变 page size，验证小 page 是否提高有效 cache reuse，并确定收益开始趋于饱和的粒度区间。
-2. **Page Size vs. I/O Efficiency**：在相同 page-size sweep 下测量 actual transfer fragmentation、sustained host→GPU bandwidth、bandwidth utilization 与 serving-level I/O stall。
-3. **GPU-Assisted I/O Compensation**：在 Experiments 1–2 已确定的代表性 page-size operating points 上比较 baseline I/O 与 GPU-assisted I/O，验证其能否恢复 transfer efficiency、降低 non-overlapped I/O stall，并转化为实际 serving benefit。
-4. **GPU Compute Cost and Net Benefit**：评估 GPU-assisted I/O 对 prefill、decode 和完整 serving 的 GPU computation interference，并判断 I/O benefit 扣除 compute cost 后是否仍然具有正的 end-to-end net benefit。
-
-当前四个实验的设计文档均已完成。
+1. **Page Size vs. Cache Reuse**：在同一 attention backend 支持的 page-size range 内，只改变 page size，测量 page-boundary loss 与 effective reuse。
+2. **Page Size vs. I/O Efficiency**：固定 logical transfer workload 验证 page/transfer fragmentation 对 bandwidth 的直接影响，再通过 serving-level validation 检查是否形成 non-overlapped I/O stall。
+3. **GPU-Assisted I/O Compensation**：在 Experiments 1–2 确定的代表性 operating points 上固定 page size、layout、write policy 和 workload，仅比较 `direct` 与 `kernel` I/O。
+4. **GPU Compute Cost and Net Benefit**：测量 kernel I/O 对 prefill/decode 的 computation interference，并通过实际 end-to-end serving measurement 判断净收益。
 
 ## Directory structure
 
@@ -33,6 +46,7 @@ GPU computation interference and end-to-end benefit
 page-granularity-gpu-assisted-io/
 ├── README.md
 ├── docs/
+│   ├── 00-common-conventions.md
 │   ├── 01-page-size-cache-reuse.md
 │   ├── 02-page-size-io-efficiency.md
 │   ├── 03-gpu-assisted-io-compensation.md
@@ -43,32 +57,41 @@ page-granularity-gpu-assisted-io/
     └── README.md
 ```
 
-- `docs/`：实验设计、变量定义、执行记录与分析边界。
-- `code/`：workload 构造、page-size sweep、指标采集、实验运行与结果处理代码。
-- `results/`：raw measurements、processed data、统计结果、图表与结果摘要。
+- `docs/00-common-conventions.md`：统一 runtime、page/granularity terminology、backend definition、validity gate 与 metric semantics。
+- `docs/01-04*.md`：四个实验的独立目标、变量、执行流程和解释边界。
+- `code/`：workload、runtime validation、page sweep、I/O instrumentation、GPU interference profiling 与结果处理代码。
+- `results/`：raw measurements、processed data、统计结果、图表和结果摘要。
 
 ## Experiment logic
 
 ```text
 Experiment 1
-小 page 是否真的提高有效 cache reuse？
+小 page 是否提高 effective reuse？
         ↓
 Experiment 2
-这种粒度是否造成 actual transfer fragmentation、带宽下降与 serving I/O stall？
+这种 page granularity 是否真实产生更多小 transfer，并降低 I/O efficiency？
         ↓
 Experiment 3
-GPU-assisted I/O 能否恢复传输效率，并把恢复转化为 serving benefit？
+kernel I/O 能否在相同 page/workload 下恢复 transfer efficiency 并降低 stall？
         ↓
 Experiment 4
-恢复 I/O 效率所付出的 GPU computation cost 是否值得？
+恢复 I/O 所占用的 GPU resource 是否抵消了收益？
 ```
 
-Experiment 2 分为 Controlled I/O experiment 与 Serving-level validation。前者固定逻辑总传输数据量，只改变 page granularity，以隔离 fragmentation 对 bandwidth efficiency 的直接影响；后者从 Experiment 1 选择代表性 operating points，验证该机制是否真正进入 serving critical path。
+Experiment 1 与 Experiment 2 只有在使用 SGLang 这类统一 `page_size` 语义的 runtime 时才能共享同一 page-size axis。如果替换为把 prefix matching 与 physical storage 分离的 runtime，两个实验必须分别报告 reuse-matching granularity 与 physical/transfer granularity。
 
-Experiment 3 不重新进行完整 page-size sweep，而是复用 Experiments 1–2 已确定的 large-page baseline、trade-off page 与 small-page fragmented region。它同样分为 Controlled I/O compensation 与 Serving-level validation，先验证 backend 对 transfer efficiency 的直接补偿，再验证 bandwidth recovery 是否能够降低 non-overlapped I/O stall 并改善 TTFT / throughput。
+Experiment 2 不能根据 configured page size 推断 fragmentation。实际 transfer bytes、operation granularity 和 batching/coalescing behavior 必须被观测。
 
-Experiment 4 继续复用 Experiment 3 的 representative operating points 和 workloads，不重新扩展 page-size 或 workload sweep。它分为 Controlled GPU interference 与 End-to-End Net Benefit 两层，分别测量 prefill/decode slowdown，并将 compute cost 与 Experiment 3 已确认的 I/O stall reduction 放回同一 serving workload 中比较。
+Experiment 3 不重新进行完整 page-size sweep，而是复用前两组确定的 representative points。Backend 比较中必须显式固定 `hicache_mem_layout`、`hicache_write_policy`、attention backend 和 cache state。
 
-Experiments 1–4 使用同一 page-size axis 和可对应的 representative operating points。联合分析需要同时观察 effective reuse、actual transfer granularity、bandwidth utilization、non-overlapped I/O stall、prefill/decode slowdown 与 end-to-end serving performance，从而判断 small page + GPU-assisted I/O 是否能够形成同时兼顾 reuse、I/O efficiency 与 GPU compute cost 的有效 operating region。
+Experiment 4 不把 GPU utilization 上升直接解释为 interference。Compute cost 必须由 prefill/decode performance 和 profiler evidence 支持，最终 net benefit 必须来自实际 end-to-end measurement。
 
-本部分不预设更小 page 或 GPU-assisted I/O 一定更优。最终结果应区分 unnecessary、net-benefit 与 interference-limited operating regions，并给出 GPU-assisted I/O 的适用边界。
+## Final output
+
+本实验组最终需要确定三个层次的边界：
+
+- **reuse-efficient region**：继续缩小 page 已很少增加有效 reuse；
+- **I/O-compensation region**：kernel I/O 能够显著恢复 small-page transfer efficiency；
+- **net-benefit region**：I/O stall reduction 在扣除 GPU computation interference 后仍带来正的 end-to-end benefit。
+
+实验不预设更小 page 或 GPU-assisted I/O 一定更优。Unsupported、partial 和 negative results 都属于正式证据。
