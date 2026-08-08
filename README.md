@@ -36,6 +36,9 @@ Detailed designs currently available:
 - [Hierarchical cache value evaluation](experiments/hierarchical-cache-value/)
 - [Page granularity and GPU-assisted I/O](experiments/page-granularity-gpu-assisted-io/)
 - [Cache locality and scheduler behavior](experiments/cache-locality-scheduler-behavior/)
+- [End-to-end serving](experiments/end-to-end-serving/)
+
+The Model and Hardware Generalization group remains at the project-plan level. Its representative points should be frozen from validated results of the first five groups before an experiment-specific directory is created.
 
 ## Model and hardware baseline
 
@@ -64,11 +67,13 @@ Likewise, a current runtime option with a scheduler-related name is not automati
 
 ## Runtime discipline
 
-Runtime selection follows the mechanism being evaluated rather than assuming one engine is suitable for every experiment.
+Runtime selection follows the mechanism being evaluated rather than assuming one engine is suitable for every experiment group.
 
-The Page Granularity and GPU-Assisted I/O group uses SGLang HiCache as the preferred mechanism candidate because it exposes explicit cache-page and direct/kernel I/O controls. This path remains conditional on establishing a non-Docker CUDA-12-compatible build for the current A100 cluster and passing the experiment-specific runtime/state validation gate.
+The Page Granularity and GPU-Assisted I/O group uses SGLang HiCache as the preferred mechanism candidate because it exposes explicit cache-page and direct/kernel I/O controls. This path remains conditional on establishing a non-Docker CUDA-12.x-compatible build for the current A100 cluster and passing the experiment-specific runtime/state validation gate.
 
 The scheduler group uses Strata §4.3 as its mechanism reference. It separates short-distance/high-overlap delay-hit behavior from longer-distance host-loading pressure instead of assuming that all scheduler pathologies monotonically worsen as locality decreases.
+
+End-to-End Serving only composes mechanisms that have passed their corresponding capability and validity gates. Its five configurations are a comparison set, not a strictly monotonic feature chain. `Hierarchical Cache + I/O Optimization` and `Hierarchical Cache + Scheduler Optimization` are parallel attribution branches, while `Full Configuration` enables the validated hierarchy, I/O, and scheduler mechanisms together.
 
 ## Repository policy
 
@@ -80,11 +85,12 @@ See [`docs/REPOSITORY_RULES.md`](docs/REPOSITORY_RULES.md).
 
 Work in progress.
 
-Detailed experiment designs are currently specified for the first four groups:
+Detailed experiment designs are currently specified for the first five groups:
 
 - Modern KV / State Bottleneck Profiling;
 - Hierarchical Cache Value Evaluation;
 - Page Granularity and GPU-Assisted I/O;
-- Cache Locality and Scheduler Behavior.
+- Cache Locality and Scheduler Behavior;
+- End-to-End Serving.
 
-Implementation, pinned-runtime validation, and measured results will be added incrementally. End-to-End Serving and Model/Hardware Generalization remain at the project-plan level and should receive experiment-specific designs before implementation begins.
+Implementation, pinned-runtime validation, and measured results will be added incrementally. Model and Hardware Generalization remains at the project-plan level until representative validation points are frozen from the earlier groups.
