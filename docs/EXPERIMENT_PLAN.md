@@ -152,31 +152,51 @@ TPOT 或等价 decode-latency metric 在需要解释 output-length / decode inte
 
 **Question:** 前五组得到的方向性结论能否跨模型与 GPU 平台保持？
 
-代表性矩阵：
+本组包含三个分实验，不把前五组实验机械重复四遍。
+
+#### Experiment 1. Cross-model Mechanism Generalization
+
+固定 A100 40GB，对 Qwen3.5-9B 与 Gemma 4 12B 执行统一的 representative workloads。
+
+该实验同时建立两个模型各自的 baseline bottleneck profile，并验证 hierarchical cache、I/O optimization 与 scheduler optimization 的 mechanism-level effect 是否跨模型保持。
+
+跨模型比较主要使用 relative state/load region、相对自身 baseline 的 normalized effect 与 mechanism observable。Absolute throughput 作为必要原始结果保留，但不作为 cross-model robustness 的唯一判断依据。
+
+模型差异只支持 cross-model robustness 与 serving-state behavior correlation，不支持 attention architecture 的单因素因果归因。
+
+#### Experiment 2. Cross-hardware Conclusion Stability
+
+固定模型与代表性 workload，在 A100 40GB 与 L40 48GB 上验证 bottleneck location、optimization direction 和 relative benefit 是否稳定。
+
+硬件比较不要求相同 absolute throughput。正式分析同时记录实际 CPU-GPU topology、host-memory policy、driver、CUDA/runtime 与 usable GPU memory budget，避免把 GPU 型号本身当成完整硬件条件。
+
+#### Experiment 3. End-to-End Generalization
+
+在少量最终代表性 workload 上完成 `2 models × 2 GPUs` 的交叉验证。
+
+该实验不重新进行 mechanism ablation，而是验证前两个实验建立的机制规律能否转化为稳定的 serving-level throughput 与 latency gain。
+
+代表性矩阵为：
 
 | Model | A100 40GB | L40 48GB |
 |---|---:|---:|
-| Qwen3.5-9B | reuse earlier matched results | representative validation |
-| Gemma 4 12B | reuse earlier matched results | representative validation |
+| Qwen3.5-9B | reference / matched validation | representative validation |
+| Gemma 4 12B | reference / matched validation | representative validation |
 
-不把前五组完整实验重复四遍。
-
-从前五组冻结少量代表点，例如：
+Representative points 从前五组已经通过 validity gate 的结果中冻结，至少覆盖：
 
 - neutral/control point；
-- clear cache/hierarchy benefit；
-- clear I/O benefit；
-- clear scheduler benefit；
-- operating boundary；
-- end-to-end representative workload。
+- clear cache/hierarchy pressure condition；
+- clear I/O pressure condition；
+- clear scheduler pressure condition；
+- representative operating boundary；
+- representative end-to-end workload when applicable。
 
-A100 上已经存在且配置完全匹配的结果直接复用，只补齐必要的 L40 matched runs。
+Selection rule 与 representative-point identifiers 必须在 generalization optimized results 生成前版本化冻结。不能在看到跨模型或跨硬件结果后反向替换验证点。
 
-模型维度只能支持 cross-model robustness 与 cache/state behavior correlation。两个模型之间的差异不能被解释为 attention architecture 的单因素因果效应。
+A100 上已经存在且 experiment contract 完全匹配的结果可以复用。若 tokenizer、runtime、cache/state budget、load definition、measurement boundary 或其他关键 comparison semantics 不同，则需要重新执行 matched run，不能仅根据模型/硬件名称复用。
 
-硬件维度重点分析 memory capacity、host-GPU transfer、memory bandwidth 与 compute capability 对结论的影响。
-
-该组目前保持 project-plan 状态。只有在前五组产生经过 validity gate 的结果，并冻结 representative-point selection rule 后，才建立具体实验目录和执行矩阵，避免根据后验结果挑选有利验证点。
+本组的实验目录已经建立在 `experiments/model-hardware-generalization/`。当前已完成 shared comparison conventions 与 Experiment 1 的详细设计。Experiments 2–3 在 representative execution points 与对应 execution contract 冻结后补充。
 
 ## 3. Experimental dependency chain
 
