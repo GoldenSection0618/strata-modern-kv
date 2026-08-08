@@ -2,260 +2,223 @@
 
 ## 1. Evaluation objective
 
-The objective is to re-evaluate the main systems claims behind Strata under modern hybrid LLMs and the GPU platforms available to this project.
+本项目重新评估 Strata 的主要 systems claims 在现代 hybrid LLM 与本项目可用 GPU 平台上是否仍然成立。
 
-The experiment suite is organized around causal questions rather than one-to-one figure reproduction. Each group must be broad enough to support a credible conclusion while avoiding repeated measurements that answer the same question.
+实验不机械复现 Fig.1–15，而是保留原论文的关键 causal questions，并重新设计 workload、model、runtime 与 hardware validation。
 
-The project uses `KV/state` as an umbrella term. Attention KV, sliding-window/local KV, and recurrent/linear-attention state are separated whenever the runtime exposes them. Current model, runtime, hardware, cluster-software, and granularity facts are tracked in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md).
+仓库统一使用 `KV/state` 作为 umbrella term。Attention KV、local/sliding-window KV、recurrent/linear-attention state 在 runtime 可观测时必须分项报告。
+
+当前模型、runtime、硬件和集群事实见 [`TECHNICAL_BASELINE.md`](TECHNICAL_BASELINE.md)。
 
 ## 2. Experiment groups
 
 ### 2.1 Modern KV / state bottleneck profiling
 
-**Question:** Does the bottleneck studied by Strata still exist on modern hybrid models, and under which workload conditions does it become important?
+**Question:** Strata 研究的 cache/state loading bottleneck 在现代 hybrid model 上还剩多少？
 
-The group contains four experiments:
+包含四个实验：
 
-1. context-length scaling;
-2. shared-prefix-ratio scaling;
-3. request-arrival-rate scaling;
-4. cross-model synthesis and matched validation.
+1. context-length scaling；
+2. shared-prefix scaling；
+3. request-rate scaling；
+4. cross-model synthesis / matched validation。
 
-The first three experiments use one primary independent variable at a time. Active concurrency in the load experiment is observed as an outcome of arrival pressure rather than swept independently.
+主要观察 cache/state footprint、prefill/service computation、CPU-GPU transfer、non-overlapped I/O stall、queueing、TTFT 与 throughput。
 
-Primary observations include:
-
-- cache/state footprint, separated by state type when possible;
-- prefill or service computation time;
-- CPU-GPU transfer volume and transfer activity;
-- non-overlapped I/O stall;
-- queueing delay under load;
-- TTFT and throughput.
-
-The main hierarchical-cache condition is a verified **CPU-resident hit**. A **recompute baseline** is used to quantify saved computation, and a **GPU-resident hit control** is used when practical to estimate the lower bound for reuse without CPU-GPU restore cost.
-
-Run this group on both Qwen3.5-9B and Gemma 4 12B. Detailed designs and common measurement conventions are maintained under `experiments/modern-kv-state-bottleneck/`.
-
-This group establishes whether the rest of the Strata-style optimization space is still practically relevant.
+详细设计位于 `experiments/modern-kv-state-bottleneck/`。
 
 ---
 
 ### 2.2 Hierarchical cache value
 
-**Question:** When reusable GPU cache capacity is constrained, is extending reusable cache/state into CPU memory still worthwhile?
+**Question:** 当 reusable GPU cache capacity 受限时，把 reusable cache/state 扩展到 CPU 是否仍然值得？
 
-This group compares two system architectures under matched GPU cache budgets:
+包含四个实验：
 
-- **GPU-only**: reusable state is lost after GPU eviction and must be recomputed on a later revisit;
-- **GPU + CPU hierarchical cache**: reusable state may survive GPU eviction in the validated CPU tier and be restored on a later revisit.
+1. GPU-only vs GPU + CPU hierarchical baseline；
+2. GPU cache-pressure scaling；
+3. prefix-reuse scaling；
+4. second-model matched validation。
 
-GPU hits, CPU hits, and recomputation are measured as outcomes. They are not treated as three independent forced-residency configurations in this group.
+主要证据链为：GPU eviction → validated CPU-tier hit → avoided recomputation → restore traffic/stall → TTFT/throughput。
 
-The group contains four experiments:
+Full hybrid-state restore 无法验证时，结果必须标记为 `partial` 或 `unsupported`。
 
-1. **Baseline Benefit**: GPU-only vs hierarchical cache under cold-cache and warm-cache conditions;
-2. **GPU Cache Pressure Scaling**: vary only reusable-cache capacity pressure while keeping workload reuse fixed;
-3. **Prefix Reuse Scaling**: vary only prefix revisit/reuse opportunity while keeping cache pressure and locality structure fixed;
-4. **Cross-Model Validation**: run a small matched validation on the second model rather than repeating the full sweeps.
-
-Experiments 1–3 use one validated primary model on A100 40GB. The default candidate is Qwen3.5-9B because it exercises both attention KV and Gated DeltaNet recurrent state, but this is conditional on the full hybrid-state offload/restore gate in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md). A partial Qwen3.5 offload path must not be reported as full hierarchical caching.
-
-Experiment 4 validates representative conclusions on the second model on A100. The later Model and Hardware Generalization group reuses these A100 results and adds representative L40 runs instead of duplicating the same A100 work.
-
-Primary observations include:
-
-- GPU cache hit and eviction behavior;
-- CPU cache-hit contribution;
-- recomputation avoided by CPU-tier reuse;
-- CPU-GPU transfer volume and non-overlapped restore stall;
-- TTFT and throughput;
-- active-request preemption, which must remain absent in the main reusable-cache pressure curve.
-
-Detailed designs and shared validity rules are maintained under `experiments/hierarchical-cache-value/`.
+详细设计位于 `experiments/hierarchical-cache-value/`。
 
 ---
 
 ### 2.3 Page granularity and GPU-assisted I/O
 
-**Question:** Does fine-grained caching still improve effective reuse at the cost of fragmented I/O, and can GPU-assisted I/O recover transfer efficiency without imposing an excessive GPU compute cost?
+**Question:** Fine-grained cache 是否仍然带来 I/O fragmentation，GPU-assisted I/O 能否恢复 transfer efficiency，并且其 GPU compute cost 是否值得？
 
-This group contains four experiments:
+包含四个实验：
 
-1. **Page Size vs. Cache Reuse**: sweep only supported page sizes under a fixed attention backend and quantify effective reuse / page-boundary loss;
-2. **Page Size vs. I/O Efficiency**: first isolate page/transfer fragmentation with controlled logical bytes, then validate whether the effect enters the serving critical path;
-3. **GPU-Assisted I/O Compensation**: at representative page-size operating points, compare the same logical restore workload under standard-copy and GPU-assisted I/O;
-4. **GPU Compute Cost and Net Benefit**: measure prefill/decode interference from GPU-assisted I/O and determine whether I/O stall reduction survives as an end-to-end benefit.
+1. page size vs cache reuse；
+2. page size vs I/O efficiency；
+3. standard-copy vs GPU-assisted I/O；
+4. GPU interference and net serving benefit。
 
-SGLang HiCache is the preferred **mechanism candidate** because it exposes an explicit `page_size` together with `direct` and `kernel` CPU-GPU I/O backends. It is not treated as already executable on the project cluster. A non-Docker CUDA-12-compatible build must first satisfy the cluster software/build gate in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md). The exact runtime build, attention backend, host-memory layout, write policy, and hybrid-state support must then pass the group validity gate before serving-level results are reported.
+Configured page size、prefix-match granularity、physical block size 与 actual transfer size 不得混为同一变量。
 
-Primary observations include:
+SGLang HiCache 是主要 mechanism candidate，但必须先通过当前集群的 non-Docker build/runtime gate。
 
-**Reuse layer**
-
-- effective reused tokens;
-- reuse efficiency relative to the logically reusable prefix;
-- cache hit / occupancy / eviction supporting counters.
-
-**I/O layer**
-
-- actual CPU→GPU restore bytes;
-- observed transfer/operation granularity;
-- sustained host→GPU bandwidth;
-- bandwidth utilization relative to a matched reference;
-- restore duration and non-overlapped I/O stall.
-
-**GPU / serving layer**
-
-- prefill throughput and execution time;
-- decode throughput and per-token latency;
-- GPU-assisted I/O overlap / interference evidence;
-- TTFT, request completion time, and overall throughput.
-
-Configured page size must not be used as a substitute for observed transfer size. CPU→GPU restore traffic must also be separated from GPU→CPU backup/write-back traffic.
-
-If an alternative runtime decouples prefix-match granularity from physical cache/transfer granularity, Experiments 1 and 2 must treat those as separate variables rather than pretending they share one page-size axis.
-
-Detailed designs and shared conventions are maintained under `experiments/page-granularity-gpu-assisted-io/`.
+详细设计位于 `experiments/page-granularity-gpu-assisted-io/`。
 
 ---
 
 ### 2.4 Cache locality and scheduler behavior
 
-**Question:** Under which workload structures do Strata-style control-plane optimizations still matter?
+**Question:** Strata 的 cache-aware scheduler 在现代 workload 中还在哪些条件下有价值，各阶段分别解决什么问题？
 
-Control two workload dimensions:
+这一组不把 cache distance 简化为“locality 越差，scheduler pathology 越严重”。Strata 原论文中，minimum cache distance 代表相同 context 请求连续出现，locality 最高，此时 delay hit 更明显；maximum cache distance 降低 delay-hit likelihood，但更容易产生 CPU-tier loading pressure。现代实验需要重新验证这两个方向是否仍然成立。
 
-- request arrival pressure;
-- cache distance / context locality.
+包含四个实验：
 
-Representative workload patterns include:
+1. **Locality × Arrival Rate Baseline Profiling**。使用 baseline scheduler，在 Min distance / Shuffle / Max distance × Low / Medium / High / Overload 上建立 delay-hit 与 host-loading 两类 mechanism-specific surface。
+2. **Scheduler Component Ablation**。在 Experiment 1 冻结的 W0–W3 representative workloads 上执行 progressive sequence：Baseline → +Delay-hit mitigation → +Balanced batching → +Stall hiding = Full scheduler，并在语义允许时做少量 targeted attribution。
+3. **Same-Context Concurrency Stress**。以 cold-miss resolve 为主场景，固定长期平均 offered load，只改变 unresolved context resolve window 内的 same-context fan-in。GPU-ready 是 concurrency control，CPU-restore 仅作为 full hierarchy 可验证时的扩展。
+4. **Scheduler Operating Region**。复用前三组结果，只补充少量 boundary points，形成 mechanism-specific operating map 与最终 scheduler decision matrix。
 
-- minimal locality;
-- shuffled locality;
-- large reuse distance;
-- high concurrency on the same context.
+核心指标包括：
 
-Compare scheduler stages progressively:
+- cache resolve time / same-context fan-in；
+- delay hit / redundant work / reuse realization；
+- host restore / non-overlapped I/O stall；
+- batch load / compute ratio / bundle hit；
+- GPU idle / filled-bubble time；
+- queueing；
+- P50/P90/P99 TTFT；
+- TPOT；
+- throughput。
 
-1. baseline scheduling;
-2. delay-hit mitigation;
-3. balanced batching;
-4. bubble filling / stall hiding;
-5. complete scheduler.
+Scheduler mechanism 必须通过 semantic capability gate。当前 upstream runtime 中名字相近的 scheduler option 不能自动视为 Strata 三阶段机制的等价实现。
 
-Observe:
-
-- delay hits;
-- redundant prefill;
-- queueing delay;
-- non-overlapped I/O stall;
-- TTFT;
-- throughput.
-
-This group should explain not only whether the scheduler helps, but which mechanism addresses which bottleneck.
+详细设计位于 `experiments/cache-locality-scheduler-behavior/`。
 
 ---
 
 ### 2.5 End-to-end serving
 
-**Question:** Do the individual mechanisms combine into meaningful serving gains without introducing regressions?
+**Question:** 前面验证过的机制组合起来是否产生实际 serving gain，并且不损害普通短请求？
 
-Use three workload families.
+保留三类 workload：
 
 #### A. Long-context reuse
 
-Targets Strata's primary reuse-oriented serving scenario.
+验证项目最主要的 cache/state reuse scenario。
 
 #### B. Short-context
 
-Checks whether the optimizations introduce regressions when hierarchical caching is less important.
+检查 hierarchical cache、I/O 和 scheduler optimization 是否引入 regression。
 
 #### C. Mixed workload
 
-Combines:
+同时包含：
 
-- long shared contexts;
-- ordinary short requests;
-- different output lengths;
-- different cache-locality patterns.
+- long shared contexts；
+- ordinary short requests；
+- different output lengths；
+- different cache-distance / locality patterns。
 
-Compare the system progressively:
+系统配置按 mechanism chain 比较：
 
-1. baseline;
-2. hierarchical cache;
-3. I/O optimizations;
-4. scheduler optimizations;
-5. full configuration.
+1. baseline；
+2. hierarchical cache；
+3. fixed validated I/O optimization；
+4. validated scheduler optimization；
+5. full configuration。
 
-Primary metrics:
+主要指标：throughput、P50/P90/P99 TTFT、request completion time、TPOT 与 GPU utilization。
 
-- throughput;
-- P50 / P90 / P99 TTFT;
-- request completion time;
-- GPU utilization.
-
-This is the final system-level validation. Earlier microbenchmarks and ablations should explain the effects observed here.
+只有在前面对应机制已经通过 capability/validity gate 时，才把该机制纳入 full configuration。
 
 ---
 
 ### 2.6 Model and hardware generalization
 
-**Question:** Which conclusions remain stable across modern model architectures and the two available GPU platforms?
+**Question:** 前五组得到的方向性结论能否跨模型与 GPU 平台保持？
 
-Representative matrix:
+代表性矩阵：
 
 | Model | A100 40GB | L40 48GB |
 |---|---:|---:|
-| Qwen3.5-9B | representative results reused / validated | representative validation |
-| Gemma 4 12B | representative results reused / validated | representative validation |
+| Qwen3.5-9B | reuse earlier matched results | representative validation |
+| Gemma 4 12B | reuse earlier matched results | representative validation |
 
-The full 2 × 2 matrix is used only for representative configurations selected from the first five experiment groups. It is not necessary to repeat the complete experiment suite four times.
+不把前五组完整实验重复四遍。
 
-A100 results already produced by earlier cross-model validation should be reused when the configuration is identical. Group 6 should add only the missing matched runs needed to complete the model × hardware comparison.
+从前五组冻结少量代表点，例如：
 
-The model dimension establishes cross-model robustness and relates measured cache/state behavior to observed performance. Differences between two models must not be interpreted as proof that attention architecture alone is the causal factor.
+- neutral/control point；
+- clear cache/hierarchy benefit；
+- clear I/O benefit；
+- clear scheduler benefit；
+- operating boundary；
+- end-to-end representative workload。
 
-The hardware dimension evaluates whether conclusions depend strongly on memory capacity, CPU-GPU transfer characteristics, memory bandwidth, or GPU compute behavior.
+A100 上已经存在且配置完全匹配的结果直接复用，只补齐必要的 L40 matched runs。
 
-## 3. Experimental logic
+模型维度只能支持 cross-model robustness 与 cache/state behavior correlation。两个模型之间的差异不能被解释为 attention architecture 的单因素因果效应。
 
-The six groups form a dependency chain:
+硬件维度重点分析 memory capacity、host-GPU transfer、memory bandwidth 与 compute capability 对结论的影响。
+
+## 3. Experimental dependency chain
+
+六组实验形成以下逻辑：
 
 ```text
-Bottleneck still exists?
+现代模型上 bottleneck 还存在吗？
         ↓
-Is hierarchy itself useful?
+hierarchical cache 本身值得吗？
         ↓
-Where does I/O inefficiency come from, and can it be repaired economically?
+I/O inefficiency 从哪里来，修复代价是多少？
         ↓
-When does scheduling help?
+哪些 workload 需要 cache-aware scheduling？
         ↓
-Do the pieces improve end-to-end serving?
+机制组合后是否产生 end-to-end gain？
         ↓
-Do the conclusions generalize?
+这些方向性结论能否跨模型与硬件保持？
 ```
 
-If an earlier premise is no longer true on modern models, later results must be interpreted as conditional engineering gains rather than evidence that the original bottleneck remains broadly important.
+如果某个前置 premise 在现代模型/runtime 上不成立，后续结果必须解释为 conditional engineering gain，而不是继续声称原始 bottleneck 广泛存在。
 
 ## 4. Reproducibility principles
 
-For every reported experiment:
+每个正式实验至少记录：
 
-- record exact model identifier and revision;
-- record hardware, topology, driver, CUDA/runtime, serving-engine version or commit, and relevant feature flags;
-- record workload definition and token-length convention;
-- record cache-residency mode and cache/state policy;
-- explicitly record all granularity controls rather than a generic `page size` label when the runtime exposes multiple granularities;
-- explicitly pin runtime defaults that can affect results, including I/O backend, host layout, write policy, and attention backend where relevant;
-- keep raw measurements separate from processed plots;
-- repeat measurements when variance is non-negligible;
-- preserve failed or negative results when they affect interpretation;
-- distinguish measured facts from architectural explanations;
-- avoid causal claims that are not isolated by the experiment design;
-- record runtime capability failures as `unsupported` or `partial` rather than silently substituting a different mechanism.
+- exact model identifier / revision；
+- hardware、CPU-GPU/NUMA topology；
+- driver、CUDA/runtime、serving-engine version/commit；
+- precision / cache dtype；
+- workload identifier、token-length convention 与 exact trace configuration；
+- cache residency / state policy；
+- cache granularity controls；
+- I/O backend、host layout、write policy when applicable；
+- scheduler mechanism capability status；
+- random seed；
+- raw measurement source；
+- processing / plotting version。
 
-## 5. Scope discipline
+运行时默认值只要可能影响结论，就必须解析后显式写入 metadata。
 
-The project should not reproduce every Strata figure simply for completeness. A historical figure should be reproduced when it is necessary to validate a mechanism, establish a baseline, or connect the modern evaluation to the original paper.
+Raw measurement、processed data 与 figures/tables 保持可追溯关系。
 
-Conversely, experiments should not be compressed so aggressively that a major causal link, regression check, or generalization claim is left unsupported.
+Failed、negative、partial 和 unsupported results 不静默删除。
+
+## 5. Interpretation discipline
+
+- 不把 configured feature 当作已经验证的 capability。
+- 不把 cache hit 当作 end-to-end benefit 的充分证据。
+- 不把 transfer duration 与 computation time 直接相加，异步 overlap 必须单独处理。
+- 不把两个模型的差异解释为单一 architecture causal effect。
+- 不复制原论文中的 hardware/model-dependent threshold 作为现代平台默认参数。
+- 不在看到 optimized result 后反向选择更有利的 workload 或 boundary point。
+
+## 6. Scope discipline
+
+项目不以完整复现 Strata Fig.1–15 为目标。
+
+历史 figure 只有在建立 baseline、验证 mechanism、解释 causal chain 或提供必要 reference 时才复现或重构。
+
+同时不为了压缩实验而删除关键的 mechanism attribution、regression check、boundary validation 或 generalization evidence。
