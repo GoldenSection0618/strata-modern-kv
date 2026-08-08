@@ -1,1 +1,1 @@
-# experiments/modern-kv-state-bottleneck/code/configs
+"""Experiment 3 configs package."""

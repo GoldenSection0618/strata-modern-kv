@@ -28,7 +28,9 @@
 code/
 ├── configs/
 │   ├── __init__.py
-│   └── exp1_config.py          # Experiment 1 参数 dataclass
+│   ├── exp1_config.py          # Experiment 1 参数 dataclass
+│   ├── exp2_config.py          # Experiment 2 参数 dataclass
+│   └── exp3_config.py          # Experiment 3 参数 dataclass（含 calibration / load sweep）
 ├── workload/
 │   ├── __init__.py
 │   └── token_workload.py       # Exact-token-length 工作负载构造
@@ -39,15 +41,28 @@ code/
 │   ├── __init__.py
 │   ├── gpu_monitor.py           # pynvml GPU 内存采样
 │   ├── vllm_stats.py            # KVCacheManager / PrefixCacheStats 采集
-│   └── timing.py                # TTFT 测量与分解
+│   ├── timing.py                # TTFT 测量与分解
+│   ├── calibration.py           # Exp3：sustainable capacity 校准
+│   └── load_driver.py           # Exp3：异步负载驱动（Poisson arrival）
 ├── analysis/
 │   ├── __init__.py
-│   └── exp1_analysis.py         # raw → processed CSV
-├── validate.py                  # Validation gate
-├── run_exp1.py                  # CLI 入口
-├── run_exp1.sbatch              # SLURM 模板
-└── submit_exp1.sh               # 批量提交脚本
+│   ├── exp1_analysis.py         # raw → processed CSV
+│   └── exp2_analysis.py         # raw → processed CSV
+├── validate.py                  # Validation gate（recompute 跳过 cache-hit 检查）
+├── run_exp1.py / run_exp1.sbatch / submit_exp1.sh
+├── run_exp2.py / run_exp2.sbatch / submit_exp2.sh
+└── run_exp3.py / run_exp3.sbatch / submit_exp3.sh
 ```
+
+## Runtime requirements (A100 / vLLM 0.26.0)
+
+所有 sbatch 脚本必须包含（已内置）：
+
+- `export VLLM_USE_FLASHINFER_SAMPLER=0` — flashinfer sampler JIT 编译在 CUDA/CUB 300302 上失败；
+- `export VLLM_WORKER_MULTIPROC_METHOD=spawn` — 否则 vLLM 在 fork/spawn 检测竞态下崩溃（`Cannot re-initialize CUDA in forked subprocess`）；
+- Qwen 模型自动设置 `max_num_seqs=16`（Mamba cache block 预算限制，见 `runners/vllm_runner.py`）。
+
+已知问题：`VLLMStatsCollector` 在 vLLM 0.26 V1 引擎下无法定位 `KVCacheManager`（内部对象在 EngineCore 子进程），gpu_hit/cpu_hit 验证门恒失败。修 stats 采集或放宽验证门后才能跑 hit 模式。
 
 ## Usage
 

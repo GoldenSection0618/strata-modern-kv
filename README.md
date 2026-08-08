@@ -58,4 +58,16 @@ See [docs/REPOSITORY_RULES.md](docs/REPOSITORY_RULES.md).
 
 ## Status
 
-Work in progress. The experiment design for Modern KV / State Bottleneck Profiling is now specified; implementation, runtime validation, and measured results will be added incrementally.
+Work in progress (last updated 2026-08-09).
+
+Current state of the Modern KV / State Bottleneck Profiling group:
+
+- **Design**: all four experiment designs specified (`docs/EXPERIMENT_PLAN.md`, `experiments/modern-kv-state-bottleneck/docs/00-04`).
+- **Code**: Experiment 1-3 implemented on branch `feat/exp1-implementation`; Experiment 4 is design-only (synthesis of 1-3).
+- **Runtime fixes (vLLM 0.26.0 / A100 40GB)**:
+  - `VLLM_USE_FLASHINFER_SAMPLER=0` — flashinfer sampler JIT fails on this CUDA/CUB (cub 300302 `BlockAdjacentDifference` lacks `FlagHeads`).
+  - `VLLM_WORKER_MULTIPROC_METHOD=spawn` — without it vLLM races between fork/spawn detection and crashes with "Cannot re-initialize CUDA in forked subprocess".
+- **Measured results (Qwen3.5-9B, A100)**: recompute baseline complete — exp1: 4K/8K/16K/32K; exp2: 0%/25%/50%/75%/87.5% prefix ratio (10 reps each, median/P90 TTFT in `results/exp{1,2}/`).
+- **Known blocker**: `gpu_hit` / `cpu_hit` conditions produce no data. `VLLMStatsCollector` cannot reach `KVCacheManager`/prefix-cache counters in the vLLM 0.26 V1 engine (engine internals live in the EngineCore subprocess), so the validation gate always reports `queries=0, hits=0` and measurements are aborted. Recompute mode is unaffected (cache-hit checks skipped). Fix requires reading prefix-hit stats via vLLM metrics/log API or relaxing the hit-mode validation gate.
+
+Remaining work: resolve the hit-mode stats blocker, run exp1/exp2 hit conditions, then Experiment 3 (code ready, not yet run), then Experiment 4 cross-model synthesis (Gemma 4 12B pending).

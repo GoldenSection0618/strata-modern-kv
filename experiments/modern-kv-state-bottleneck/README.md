@@ -51,3 +51,15 @@ modern-kv-state-bottleneck/
 ## Execution gate
 
 正式收集结果前，必须先验证当前 pinned runtime 对两个模型的 prefix-cache/state restore 行为。尤其是 hybrid/recurrent-state cache path，不能仅凭请求成功运行就假定 CPU-resident reuse 已正确覆盖所有 state groups。
+
+## Execution status (2026-08-09)
+
+Runtime: vLLM 0.26.0, Qwen/Qwen3.5-9B, A100 40GB (`i56m512A100`).
+
+- **Validation gate**: recompute 模式通过（cache-hit 检查按设计跳过）；gpu_hit/cpu_hit 的 cache-hit 检查因 stats 采集问题必败（见下）。
+- **Recompute baseline**: exp1 全部 4 点（4K/8K/16K/32K）、exp2 全部 5 点（0%/25%/50%/75%/87.5%）已完成，各 10 reps，summary.json 含 median/P90/min/max TTFT。
+- **gpu_hit / cpu_hit**: 无有效数据。`VLLMStatsCollector` 在 vLLM 0.26 V1 引擎下找不到 `KVCacheManager`（内部对象在 EngineCore 子进程），prefix 统计恒为 0 → 验证门 `queries=0, hits=0` 必败 → 测量中止（退出码仍为 0）。
+- **Environment requirements**（A100 / vLLM 0.26 必须）：
+  - `VLLM_USE_FLASHINFER_SAMPLER=0`（flashinfer sampler JIT 编译失败）
+  - `VLLM_WORKER_MULTIPROC_METHOD=spawn`（否则 fork 竞态崩溃）
+  - Qwen 模型 `max_num_seqs=16`（Mamba cache block 预算限制）
