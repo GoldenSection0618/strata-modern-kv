@@ -171,7 +171,7 @@ model × hardware × workload × load region × system configuration
 
 1. 四种组合的 Baseline vs Full throughput 与 latency；
 2. low / medium / high load 下的 fixed-overhead / saturation-regression summary；
-3. material regression / no-material-regression / inconclusive 所需 absolute measurement 与 uncertainty；
+3. material regression / no-material-regression / inconclusive 所需 absolute measurement、uncertainty 与预先冻结的 decision rule；
 4. 无效 CPU-tier activity、scheduler overhead 或其他 regression attribution evidence when observed。
 
 ### Mixed workload
@@ -212,7 +212,7 @@ Experiment 3 最终至少形成：
 | Gemma 4 12B | A100 | Long | ... | ... | ... | ... | ... | ... | ... |
 | Gemma 4 12B | L40 | Long | ... | ... | ... | ... | ... | ... | ... |
 
-Final conclusion 使用 `stable_generalization`、`model_sensitive`、`hardware_sensitive`、`boundary_case`、`throughput_latency_tradeoff`、`cross_class_tradeoff`、`unsupported` 或 `inconclusive`。
+Final conclusion 使用 `stable_generalization`、`model_sensitive`、`hardware_sensitive`、`boundary_shifted`、`throughput_latency_tradeoff`、`cross_class_tradeoff`、`unsupported` 或 `inconclusive`。
 
 ## Result interpretation
 
