@@ -2,320 +2,334 @@
 
 ## 1. Objective
 
-本实验定量评估 GPU-assisted I/O 在恢复 fragmented I/O efficiency 的同时占用了多少 GPU execution resource，以及这种资源竞争是否干扰模型的 prefill 与 decode。实验最终判断 Experiment 3 中观察到的 I/O benefit 在扣除 GPU computation interference 后是否仍然具有实际系统价值。
+本实验定量评估 SGLang `kernel` GPU-assisted I/O 在恢复 fragmented I/O efficiency 的同时，对模型 prefill / decode computation 造成多少 GPU-side interference，并最终判断 Experiment 3 的 I/O benefit 在扣除 compute cost 后是否仍然形成正的 end-to-end net benefit。
 
-本实验不再研究 GPU-assisted I/O 是否能够恢复带宽。该问题由 Experiment 3 回答。本实验只研究 GPU-assisted I/O 的计算代价以及最终 end-to-end net benefit。
+本实验不再证明 kernel backend 能否提高 raw transfer bandwidth。该问题已经由 Experiment 3 回答。
 
-核心机制链为：
+所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
+
+## 2. Primary causal question
+
+本实验研究两条同时发生的路径：
 
 ```text
-GPU-assisted I/O
-        ↓
-I/O efficiency ↑
-        ↓
+kernel I/O
+    ↓
+restore efficiency ↑
+    ↓
 non-overlapped I/O stall ↓
 
-同时
+kernel I/O
+    ↓
+GPU resource contention / execution overlap
+    ↓
+model computation efficiency ?
 
-GPU resource contention ↑
-        ↓
-model computation efficiency ↓
-
-最终决定
-
+两者共同决定
+    ↓
 end-to-end net benefit
 ```
 
-## 2. Research questions
+最终判断必须来自实际 serving measurement，而不是把 profiler 中可能 overlap 的时间项手工相加减。
 
-本实验回答以下问题：
+## 3. Experimental inputs
 
-1. GPU-assisted I/O 是否会与模型计算竞争 GPU execution resource；
-2. 这种 interference 对 prefill 和 decode 的影响是否不同；
-3. interference 是否随 I/O intensity 增强；
-4. Experiment 3 中 bandwidth 和 I/O stall 的改善能否抵消模型计算性能下降；
-5. GPU-assisted I/O 在什么 workload 下具有正的 end-to-end net benefit；
-6. 是否存在 I/O benefit 已经趋于饱和，但 GPU computation cost 继续增加的 operating region。
+Experiment 4 不重新探索 page-size space。
 
-## 3. Experimental variables
+直接复用 Experiment 3 的三个 representative page-size / workload points：
 
-本实验主要比较以下三个维度：
+1. coarse / no-need control；
+2. reuse-I/O trade-off point；
+3. fine / fragmentation-dominated point。
 
-- I/O backend：baseline I/O 与 GPU-assisted I/O；
-- I/O intensity：低、中、高三个代表性等级；
-- computation phase：prefill、decode 和完整 serving。
-
-Page size 不再进行完整 sweep。本实验直接复用 Experiment 3 已确定的 representative operating points，重点保留一个 fragmentation 较弱的对照点、一个 GPU-assisted I/O 收益明显的 trade-off 点，以及一个 fragmentation 较强的压力点。
-
-同一比较组中保持以下条件一致：
-
-- model 与 model revision；
-- hardware；
-- precision；
-- cache capacity；
-- cache policy；
-- scheduler configuration；
-- request sequence；
-- input/output length；
-- concurrency；
-- CPU memory configuration。
-
-## 4. Experiment structure
-
-Experiment 4 分为两层：
-
-1. Controlled GPU interference experiment；
-2. End-to-End Net Benefit experiment。
-
-第一层隔离 GPU-assisted I/O 对模型计算本身的影响。第二层将计算代价与 Experiment 3 已确认的 I/O benefit 放回同一 serving workload 中，判断最终系统性能是改善、基本不变还是退化。
-
-## 5. Experiment 4A: Controlled GPU interference
-
-### 5.1 Goal
-
-Controlled experiment 在固定模型计算 workload 的条件下比较以下三种运行状态：
+I/O backend 比较继续使用：
 
 ```text
-model computation only
-model computation + baseline I/O
-model computation + GPU-assisted I/O
+direct
+kernel
 ```
 
-该设计用于区分模型自身的正常计算性能、普通 I/O 引入的影响，以及 GPU-assisted I/O 额外产生的 GPU-side interference。
+Kernel backend 的实现配置在 Experiment 4 开始前固定。不得根据每个 end-to-end workload 的最终 speedup 单独调优。
 
-### 5.2 Prefill interference
+## 4. Experimental structure
 
-Prefill 使用固定输入长度和固定 batch configuration。
+Experiment 4 分为两层。
 
-每组配置分别执行纯 prefill、与 baseline I/O 并行的 prefill，以及与 GPU-assisted I/O 并行的 prefill。I/O workload 复用 Experiment 3 已验证的 transfer pattern。
+### Experiment 4A: Controlled GPU interference
 
-实验在保持 prefill workload 不变的情况下逐步提高 I/O intensity。
+固定 model compute workload，在可控 I/O demand 下比较 compute-only、direct I/O 与 kernel I/O，测量 GPU-assisted I/O 对 prefill / decode 的直接干扰。
 
-主要记录：
+### Experiment 4B: End-to-End net benefit
 
-- prefill throughput；
+将 Experiment 3 已确认的 I/O recovery 与 Experiment 4A 测得的 compute interference 放回相同 serving workload，通过实际 TTFT / completion time / throughput 判断最终净收益。
+
+## 5. Experiment 4A: Comparison states
+
+每个固定 compute workload 比较三种状态：
+
+```text
+A. compute only
+B. compute + direct I/O
+C. compute + kernel I/O
+```
+
+A 提供模型计算基线。
+
+B 量化 standard-copy path 本身与模型计算并发时的影响。
+
+C 量化 GPU-assisted kernel path 的总影响。
+
+因此分析时既报告 C 相对于 A 的 total slowdown，也报告 C 相对于 B 的 incremental kernel cost。
+
+## 6. I/O demand levels
+
+I/O demand 设置 low、medium、high 三个代表性等级。
+
+这些等级由 Experiment 3 的实际 restore behavior 定义，使用可复现的 target HtoD bytes / restore cadence 或等价 workload trace，而不是凭主观标签生成。
+
+### Low
+
+I/O 很少进入 critical path，用作 negative control。
+
+### Medium
+
+存在明确 restore stall，但 I/O 尚未完全主导 serving。该点是主要 trade-off 区域。
+
+### High
+
+大量 CPU-resident state 需要恢复，用于观察 kernel I/O 的最大 potential benefit 与 GPU interference 上限。
+
+I/O demand 是 robustness dimension。它不替代 page-size point，也不允许同时任意改变 batch size、context length 或 scheduler policy。
+
+## 7. Prefill interference experiment
+
+Prefill 使用固定 input tokens、batch composition 和 execution configuration。
+
+对于每个 I/O demand level，分别运行 compute-only、direct 和 kernel 三种状态。
+
+记录：
+
 - prefill execution time；
-- GPU compute utilization；
-- model kernel execution behavior；
-- I/O 与 model computation 的 overlap；
-- GPU-assisted I/O 活跃期间的 compute slowdown。
+- prefill throughput；
+- GPU kernel timeline；
+- I/O/compute overlap interval；
+- relevant GPU execution-resource / occupancy evidence；
+- target HtoD bytes 和 achieved bandwidth。
 
-Prefill slowdown 以同一 workload 的 compute-only baseline 为基准定义：
+Primary normalized metrics：
 
 ```text
-prefill slowdown = assisted-I/O prefill time / compute-only prefill time
+prefill total slowdown
+= kernel prefill time / compute-only prefill time
+
+prefill incremental kernel cost
+= kernel prefill time / direct-I/O prefill time
 ```
 
-### 5.3 Decode interference
+绝对 execution time 与 throughput 必须同时保留。
 
-Decode 使用固定 active request 数、固定 context condition 和固定 output generation window。
+## 8. Decode interference experiment
 
-每组配置分别执行 decode only、decode + baseline I/O，以及 decode + GPU-assisted I/O。I/O intensity 同样覆盖低、中、高三个代表性等级。
+Decode 使用固定 active request count、context condition 和 output-generation window。
 
-主要记录：
+对于每个 I/O demand level，同样比较 compute-only、direct 和 kernel 三种状态。
+
+记录：
 
 - decode throughput；
-- token generation rate；
 - per-token latency；
-- model kernel execution behavior；
-- GPU-assisted I/O 活跃区间中的 decode slowdown。
+- decode-step execution time；
+- GPU kernel timeline；
+- I/O/compute overlap；
+- target HtoD bytes 和 bandwidth。
 
-Decode slowdown 以同一 workload 的 compute-only baseline 为基准定义：
+Primary normalized metrics：
 
 ```text
-decode slowdown = assisted-I/O decode latency / compute-only decode latency
+decode total slowdown
+= kernel decode latency / compute-only decode latency
+
+decode incremental kernel cost
+= kernel decode latency / direct-I/O decode latency
 ```
 
-Prefill 与 decode 必须分开测量。两者具有不同的 GPU execution pattern，不能根据一个阶段的 interference 推断另一个阶段。
+Prefill 与 decode 结果分开分析。不能根据一个 phase 的 interference 推断另一个 phase。
 
-## 6. I/O intensity design
+## 9. Optional kernel-resource subtest
 
-I/O intensity 不作为新的完整 sweep 维度，而是从前面实验中选择三个有明确系统含义的代表性状态。
+只有当 pinned SGLang/kernel implementation 提供稳定、可记录且无需修改核心语义的 GPU-I/O resource control 时，才增加一个小规模 resource-budget sweep。
 
-### Low I/O intensity
+该子实验用于观察：
 
-CPU→GPU restoration 较少，I/O 不构成主要 bottleneck。该组作为负对照，用于检查 GPU-assisted I/O 是否在低收益场景引入不必要的 compute cost。
+```text
+more GPU resource for I/O
+        ↓
+I/O bandwidth recovery ↑
+        vs
+model compute slowdown ↑
+```
 
-### Medium I/O intensity
+如果 runtime 没有可靠的公开控制项，则不为了复刻历史 figure 强行修改 kernel 或引入不可维护的私有 knob。此时 Experiment 4 使用固定 kernel implementation，通过 low/medium/high I/O demand 测量实际 interference 即可。
 
-I/O 已形成可观测 stall，但尚未完全主导 serving。该区域用于重点比较 I/O stall reduction 与 GPU compute slowdown，是最重要的 trade-off operating region。
+## 10. Experiment 4B: End-to-End workloads
 
-### High I/O intensity
+复用 Experiment 3 的 serving workloads。
 
-大量 CPU-resident cache/state 需要恢复。该区域用于观察 GPU-assisted I/O 的最大 I/O benefit、最大 GPU interference，以及系统是否发生新的 GPU-side bottleneck。
+### A. Coarse / low-I/O control
 
-## 7. Controlled interference metrics
+Direct I/O 已经较高效，用于检查 kernel 是否产生不必要 regression。
 
-### Model computation throughput
+### B. Reuse-I/O trade-off workload
 
-分别记录 prefill throughput 与 decode throughput，用于判断 GPU-assisted I/O 是否直接损害模型计算效率。
+同时存在明显 reuse value 和 Experiment 3 已确认的 direct-path I/O penalty。该场景是最终结论的主要 operating point。
 
-### Compute slowdown
+### C. Fine / high-fragmentation workload
 
-分别计算 prefill slowdown 与 decode slowdown，并统一使用同一 workload 的 compute-only run 作为基准。
+Direct path 的 fragmentation penalty 明显，用于判断 kernel 的高 I/O benefit 是否会被 GPU interference 抵消。
 
-### GPU execution overlap
+不重新添加新的 workload family。
 
-记录 GPU-assisted I/O 与模型 kernel 的时间重叠关系，确认 I/O 工作是否实际与 computation 并发、并发期间 model kernel 是否减速，以及 GPU-assisted operation 是否出现明显 serialization。
+## 11. End-to-End paired protocol
 
-### GPU resource pressure
+对于每个固定 workload，至少比较：
 
-记录能够反映 GPU execution pressure 的 profiler 指标。GPU utilization 不能单独作为 compute interference 的充分证据，必须与 model throughput、kernel execution behavior 和 overlap 情况联合解释。
+```text
+direct I/O
+kernel I/O
+```
 
-## 8. Experiment 4B: End-to-End Net Benefit
+Paired runs 保持一致：
 
-### 8.1 Goal
-
-End-to-End experiment 将 I/O stall reduction 和 GPU computation slowdown 放回同一 serving workload 中比较，直接判断 GPU-assisted I/O 是否值得启用。
-
-### 8.2 Workload selection
-
-实验复用 Experiment 3 的 representative workloads，不重新设计新的 workload family。
-
-#### A. Low-fragmentation / low-I/O workload
-
-Baseline I/O 已较高效。该组用于检查 GPU-assisted I/O 是否产生不必要的 regression。
-
-#### B. Trade-off workload
-
-该 workload 同时具有明显 cache reuse、明显 fragmented I/O，以及 Experiment 3 已确认的 bandwidth recovery。该组是 Experiment 4 的主要场景。
-
-#### C. High-fragmentation workload
-
-该 workload 具有较高 I/O pressure。该组用于判断 GPU-assisted I/O 在高压力条件下是否仍然保持正净收益，或是否因为 GPU interference 出现收益上限。
-
-## 9. End-to-End comparison protocol
-
-每个 workload 至少运行 baseline I/O 与 GPU-assisted I/O 两种配置。
-
-两种配置使用完全相同的：
-
-- request trace；
-- initial cache state；
-- cache capacity；
+- model / revision；
+- runtime commit；
+- attention backend；
 - page size；
-- scheduler；
-- random seed。
+- cache dtype；
+- GPU/CPU cache budget；
+- host layout；
+- write policy；
+- scheduler / overlap policy；
+- request trace；
+- initial CPU cache state；
+- random seed；
+- repetition protocol。
 
-所有配置使用统一 warm-up 方式并进行多次重复运行。
+每个 run 必须确认 effective reused tokens 和 logical restored state 可比。
 
-每次 run 同时记录：
+## 12. End-to-End metrics
 
+至少记录：
+
+- HtoD restore bytes / bandwidth；
+- DtoH background traffic；
+- restore duration；
+- non-overlapped I/O stall；
+- prefill execution time / throughput；
+- decode throughput / per-token latency；
 - TTFT；
 - request completion time；
 - overall throughput；
-- prefill throughput；
-- decode throughput；
-- per-token decode latency；
-- non-overlapped I/O stall；
-- GPU compute slowdown；
-- GPU-assisted I/O active time。
+- kernel/backend activity evidence。
 
-## 10. Net-benefit interpretation
+GPU utilization 可以记录，但不能单独作为 compute interference 或 resource efficiency 的结论。
 
-本实验明确区分三个概念。
+## 13. Net-benefit interpretation
 
 ### I/O benefit
 
-GPU-assisted I/O 相对于 baseline 减少的 critical-path I/O stall。
+Kernel 相对于 direct 减少的 critical-path restore stall，以及由此对应的 end-to-end improvement potential。
 
 ### Compute cost
 
-GPU-assisted I/O 引起的模型计算额外时间或 throughput degradation。
+Kernel path 相对于 direct / compute-only 引入的 prefill 或 decode slowdown。
 
 ### Net benefit
 
-最终 end-to-end latency 或 throughput 的实际改善。
+Direct 与 kernel serving run 的实际 end-to-end latency / throughput 差异。
 
-机制上可以表示为：
+机制解释可以写成：
 
 ```text
-Net benefit
+net benefit
 ≈ I/O stall reduction
-  - additional computation delay
+  - added compute delay
   - other induced overhead
 ```
 
-该关系仅用于解释。正式结果必须以实际 end-to-end measurement 为准，不能把 profiler 中存在 overlap 的时间项直接相加或相减构造最终 latency。
+该式只用于解释。正式数字以 end-to-end measurement 为准。
 
-## 11. Analysis logic
+## 14. Primary analyses
 
-实验重点判断 GPU-assisted I/O 占用的 GPU resource 是否比它消除的 I/O stall 更昂贵。
+### Analysis A: I/O demand → prefill interference
 
-可能出现以下几类结果：
+展示 absolute prefill time / throughput、total slowdown 和 incremental kernel cost。
 
-1. I/O stall 显著下降，compute slowdown 较小，end-to-end performance 明显改善。该区域属于明确的 net-benefit region。
-2. I/O stall 显著下降，compute slowdown 同样明显，end-to-end performance 仅小幅改善或基本不变。该结果说明 bottleneck 从 I/O 向 GPU computation 迁移。
-3. I/O stall 改善有限，compute slowdown 明显，end-to-end performance 下降。该 workload 不适合启用 GPU-assisted I/O。
-4. GPU-assisted I/O 基本不造成 observable compute interference。该结果说明当前 GPU workload 与 I/O execution 能够较好共存。
+### Analysis B: I/O demand → decode interference
 
-## 12. Required result views
+展示 absolute decode latency / throughput、total slowdown 和 incremental kernel cost。
 
-正式分析至少形成以下四类结果。
+### Analysis C: I/O recovery vs compute cost
 
-### Figure 1: I/O intensity → Prefill slowdown
+在相同 operating point 上并列展示：
 
-比较 baseline I/O 与 GPU-assisted I/O 下 prefill computation efficiency 随 I/O pressure 的变化。
+- bandwidth / stall recovery；
+- prefill slowdown；
+- decode slowdown。
 
-### Figure 2: I/O intensity → Decode slowdown
+该分析说明 optimization 是否只是把 bottleneck 从 I/O 移到 GPU compute。
 
-比较 decode 对 GPU-assisted I/O interference 的敏感程度。
+### Analysis D: End-to-End net benefit
 
-### Figure 3: I/O stall reduction vs. compute slowdown
+比较 direct 与 kernel 的 TTFT、completion time 和 throughput。
 
-将 Experiment 3 的 I/O benefit 与 Experiment 4 的 compute cost 放在同一 operating-point framework 中比较。
+这是 Experiment 4 的最终判断依据。
 
-### Figure 4: Workload → End-to-End performance
+## 15. Expected operating regions
 
-比较 TTFT、request completion time 与 overall throughput，作为最终 net-benefit 证据。
+最终将配置划分为：
 
-## 13. Validity checks
+- **Unnecessary region**：direct I/O 已足够高效，kernel 的 I/O benefit 小于或接近其额外成本；
+- **Net-benefit region**：stall reduction 明显大于 compute interference，end-to-end performance 改善；
+- **Interference-limited region**：kernel 恢复了 I/O，但 GPU compute slowdown 抵消大部分或全部收益。
 
-正式结果必须满足以下条件：
+如果 kernel 几乎不产生 measurable compute interference，也应明确报告，不人为制造 trade-off。
 
-1. baseline 和 GPU-assisted 配置使用完全相同的 workload；
-2. cache hit 和 actual restored state 在可比配置间保持一致；
-3. GPU-assisted I/O 必须确认实际处于 active path，而不是 fallback 到 baseline；
-4. prefill 与 decode interference 分开统计；
-5. GPU utilization 不单独作为 compute interference 证据；
-6. model slowdown 必须由实际 throughput 或 execution time 支持；
-7. profiler measurement 不得显著改变正常 serving behavior；
-8. I/O stall 与 computation overlap 的时间不能重复累计；
-9. end-to-end net benefit 必须来自实际 serving measurement，而不是仅由 microbenchmark 推算。
+## 16. Validity checks
 
-## 14. Final conclusion target
+正式结果必须满足：
 
-Experiment 4 最终需要回答：
+1. compute-only、direct、kernel 使用相同 model compute workload；
+2. direct / kernel paired serving runs 的 effective reuse 与 logical restore 可比；
+3. backend activity 有实际 evidence，不存在 silent fallback；
+4. HtoD restore 与 DtoH background traffic 可区分；
+5. prefill / decode interference 分开统计；
+6. GPU utilization 不单独作为 interference 证据；
+7. profiler instrumentation 不显著改变正常 runtime behavior；
+8. overlap 时间项不重复累计；
+9. kernel configuration 没有根据每个 E2E workload 单独 tuning；
+10. final net benefit 由实际 serving measurement 得出；
+11. partial / unsupported hybrid-state path 不报告为完整结果。
 
-> 在什么 page granularity、I/O pressure 和 serving workload 下，GPU-assisted I/O 减少的 I/O stall 大于它造成的 GPU computation cost。
+## 17. Final conclusion target
 
-最终应将 operating region 划分为：
+Experiment 4 最终回答：
 
-- **Unnecessary region**：I/O 本身不是主要瓶颈，不值得引入 GPU-assisted I/O；
-- **Net-benefit region**：I/O compensation 明显大于 GPU computation cost；
-- **Interference-limited region**：GPU resource contention 抵消了主要 I/O benefit。
+> 在哪些 page-size / restore-pressure / serving operating points 上，kernel GPU-assisted I/O 减少的 non-overlapped I/O stall 足以覆盖其对 prefill 和 decode computation 的额外成本，并形成真实的 end-to-end net benefit。
 
 四个实验最终形成完整证据链：
 
 ```text
 Experiment 1
-page size ↓
-→ effective cache reuse ↑
+page size → effective reuse
 
 Experiment 2
-page size ↓
-→ actual I/O fragmentation ↑
-→ bandwidth efficiency ↓
+page size → observed fragmentation → direct-I/O penalty
 
 Experiment 3
-GPU-assisted I/O
-→ bandwidth recovery
-→ non-overlapped I/O stall ↓
+direct vs kernel → I/O recovery → stall reduction
 
 Experiment 4
-GPU-assisted I/O
-→ GPU computation interference
-→ end-to-end net benefit / regression
+kernel I/O → compute interference → end-to-end net benefit / regression
 ```
 
-该实验组最终不以证明 GPU-assisted I/O 一定更快为目标，而是确定其适用边界和真实系统净收益。
+本实验组最终目标是确定机制的适用边界，而不是证明 GPU-assisted I/O 始终更快。
