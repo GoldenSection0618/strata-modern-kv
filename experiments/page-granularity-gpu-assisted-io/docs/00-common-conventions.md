@@ -14,7 +14,9 @@
 - `--hicache-mem-layout`：host cache memory layout；
 - `--hicache-write-policy`：GPU→CPU backup / write-back policy。
 
-实验必须记录并固定精确的 SGLang version / commit。不得依赖 runtime 默认值，因为默认 backend、layout 或其他行为可能随版本变化。
+SGLang 在本实验组中是 **preferred mechanism candidate**，不是无需验证即可执行的 runtime baseline。正式执行还必须先通过仓库 [`docs/TECHNICAL_BASELINE.md`](../../../docs/TECHNICAL_BASELINE.md) 的 cluster software/build gate，在当前集群建立并固定可运行的 non-Docker CUDA-12-compatible build。
+
+实验必须记录并固定精确的 SGLang version / commit。不得依赖 runtime 默认值，因为默认 backend、layout 或其他行为可能随版本变化。Upstream feature availability 不能替代本地 execution validation。
 
 如果最终使用其他 serving runtime，只有在该 runtime 能提供等价且可验证的控制变量时，才能沿用本文档中的实验名称。否则必须重新定义变量，不能把不同语义的 knob 都称为 `page size`。
 
@@ -114,7 +116,7 @@ Page size 本身可能改变 attention-kernel execution efficiency。SGLang 的 
 
 因此，任何 **跨 page size 的 serving latency / throughput comparison** 都不能把全部变化直接解释为 I/O effect。
 
-Experiment 2 必须为每个 serving-level page-size point提供 matched **GPU-resident hit / no-restore control**。同一 page size 下：
+Experiment 2 必须为每个 serving-level page-size point 提供 matched **GPU-resident hit / no-restore control**。同一 page size 下：
 
 ```text
 CPU-resident restore run
@@ -124,7 +126,7 @@ GPU-resident hit control
 
 用于估计 restore-related penalty。这样 page size 对 attention kernel 本身的影响可以在同粒度 pair 内基本抵消。
 
-Experiments 3–4 在同一 page size 下比较 `direct` 与 `kernel`，因此 page-size-dependent compute behavior自然保持一致，但仍需固定 attention backend。
+Experiments 3–4 在同一 page size 下比较 `direct` 与 `kernel`，因此 page-size-dependent compute behavior 自然保持一致，但仍需固定 attention backend。
 
 ## 7. Metric definitions
 
