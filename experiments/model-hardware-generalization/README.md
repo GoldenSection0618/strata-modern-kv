@@ -63,7 +63,11 @@ Experiment 3
 
 Experiment 1 固定 A100 40GB。Experiment 2 才引入 L40 48GB 作为硬件变量。Experiment 3 使用最终冻结的少量 representative workloads 完成四种组合的交叉验证。
 
-Experiment 3 的主矩阵以 Baseline 与 Full Configuration 为主，不机械重复所有中间 system configurations。只有在主结果出现异常、trade-off 或与前置机制预测不一致时，才执行 targeted attribution runs。
+Experiment 3 的主矩阵以 Baseline 与一个预先冻结的 **common Full Configuration** 为主。Common Full Configuration 必须在四种 model × hardware 组合上具有相同的机制集合和经过验证的等价语义。某一组合如果无法支持该共同 feature set，则该组合对这一 full-system cross-product 标记为 `unsupported`，不能静默删除某个 mechanism 后仍使用同一个 Full Configuration 名称。
+
+如果项目希望额外展示每个组合各自能运行的最佳配置，可以作为 `best_validated_configuration` 补充结果单独报告，但不能用它替代 common Full Configuration 的跨组合 robustness comparison。
+
+Experiment 3 不机械重复所有中间 system configurations。只有在主结果出现异常、trade-off 或与前置机制预测不一致时，才执行 targeted attribution runs。
 
 ## Execution discipline
 
@@ -74,6 +78,8 @@ Representative points 与 representative workloads 必须依据前置实验的�
 跨模型比较优先使用相对自身 baseline 的 normalized effect 与 mechanism-level observable，而不是直接比较 absolute throughput。
 
 跨硬件比较同时保留 same-workload deployment behavior 与必要的 matched-pressure control。前者用于观察相同实际 workload 在不同平台上的 bottleneck shift，后者用于判断在相近 operating pressure 下 mechanism 本身是否保持稳定。
+
+Experiment 3 的 primary load grid 按模型分别从 A100 baseline calibration 冻结。对同一个模型，A100 与 L40 使用相同 arrival/load schedule，从而保留 hardware same-workload comparison。不同模型之间不要求相同 requests/s，跨模型主要比较 normalized effect 与对应 operating region。L40 若因容量或 serving capacity 差异落入明显不同的 pressure region，只补充少量 matched-pressure control，并与 primary result 分开报告。
 
 End-to-End Generalization 同时报告 absolute serving performance 与 normalized Full-vs-Baseline effect。Mixed workload 必须保留 request-class-level performance，避免 aggregate metrics 掩盖 cross-class interference。
 
