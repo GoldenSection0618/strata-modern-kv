@@ -79,19 +79,24 @@ Do not rewrite published commits merely to obtain prettier commit history.
 Every experiment that contributes to a reported result should make it possible to recover:
 
 - exact model identifier and model revision;
-- hardware platform;
+- hardware platform and relevant CPU-GPU / NUMA topology;
 - GPU driver, CUDA/runtime, and serving-engine version or commit;
 - model precision or quantization mode;
 - workload definition and exact token lengths;
 - relevant runtime configuration and feature flags;
 - cache-residency mode and cache/state policy;
+- all relevant cache granularity controls;
+- I/O backend, host-memory layout, and write policy when offloading is involved;
+- attention backend when it constrains page/block size or changes the measured kernel path;
 - random seed when applicable;
 - raw measurement source;
 - processing or plotting procedure.
 
 A plotted number should be traceable back to raw measurements rather than being copied manually into plotting code.
 
-Features whose behavior is explicitly experimental or rapidly changing in the serving runtime must be validated on the pinned version before their measurements are interpreted as model behavior.
+Features whose behavior is experimental or rapidly changing in the serving runtime must be validated on the pinned version before their measurements are interpreted as model behavior.
+
+Do not rely on runtime defaults for a parameter that can affect the claim. If a default controls page size, cache layout, I/O backend, write policy, scheduler overlap, or another material mechanism, record the resolved value explicitly in run metadata.
 
 ## 6. Experimental integrity
 
@@ -107,7 +112,7 @@ When results are unstable or anomalous:
 
 Negative results are part of the project evidence when they materially affect a claim.
 
-A configuration change made after inspecting results must be recorded. Do not silently tune thresholds, cache policies, or load points separately for different models in a way that changes the comparison question.
+A configuration change made after inspecting results must be recorded. Do not silently tune thresholds, cache policies, page sizes, I/O-kernel settings, or load points separately for different models in a way that changes the comparison question.
 
 ## 7. Generated and large files
 
@@ -146,6 +151,12 @@ Do not replace measured runtime state footprint with a theoretical formula when 
 
 Do not add raw transfer duration to computation time when asynchronous transfer overlaps with compute. A latency decomposition must distinguish transfer activity from non-overlapped I/O stall.
 
+Do not infer actual I/O fragmentation from configured page/block size alone. Record actual transfer bytes, transfer/operation granularity, batching/coalescing behavior, or equivalent profiler evidence.
+
+Do not collapse distinct runtime granularities into one generic `page size` field. Prefix-match granularity, physical cache block size, recurrent-state checkpoint granularity, offload chunk size, and observed transfer size must remain distinguishable whenever the runtime separates them.
+
+CPU→GPU restore traffic and GPU→CPU backup/write-back traffic must be separable in I/O experiments.
+
 Cross-model normalized metrics must retain the underlying absolute measurements so normalization cannot hide large differences in real workload or capacity.
 
 ## 10. Configuration over hidden state
@@ -158,7 +169,8 @@ Avoid relying on:
 - shell history as the only record of an experiment;
 - undocumented environment variables;
 - machine-local paths embedded in source code;
-- implicit cache contents left by a previous run.
+- implicit cache contents left by a previous run;
+- runtime defaults whose resolved value is not captured in metadata.
 
 Machine-specific paths and credentials must stay outside Git.
 
@@ -186,6 +198,7 @@ Keep `docs/EXPERIMENT_PLAN.md`, `docs/TECHNICAL_BASELINE.md`, and experiment-spe
 - comparison baselines;
 - measurement semantics;
 - interpretation boundaries;
-- volatile runtime assumptions.
+- volatile runtime assumptions;
+- runtime capability gates and unsupported configurations.
 
 The documentation describes the intended evidence. The code and raw measurements determine what was actually executed.
