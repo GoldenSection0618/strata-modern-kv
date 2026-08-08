@@ -114,6 +114,8 @@ Negative results are part of the project evidence when they materially affect a 
 
 A configuration change made after inspecting results must be recorded. Do not silently tune thresholds, cache policies, page sizes, I/O-kernel settings, or load points separately for different models in a way that changes the comparison question.
 
+Any regression/equivalence margin, representative-point selection rule, saturation rule, or workload-boundary rule used to support a claim should be frozen before inspecting the optimized comparison that it will judge.
+
 ## 7. Generated and large files
 
 Do not commit:
@@ -159,6 +161,8 @@ CPU→GPU restore traffic and GPU→CPU backup/write-back traffic must be separa
 
 Cross-model normalized metrics must retain the underlying absolute measurements so normalization cannot hide large differences in real workload or capacity.
 
+Request-rate matching alone is not sufficient when compared workloads differ materially in input length, output length, or request-class composition. Such comparisons must either be described as operational sensitivity tests or include a matched-work / matched-load control appropriate to the claim.
+
 ## 10. Configuration over hidden state
 
 Experimental parameters should live in version-controlled configuration or command-line arguments whenever practical.
@@ -191,14 +195,16 @@ If a secret is committed accidentally, removing it in a later commit is not suff
 
 When an experiment design materially changes, update the corresponding documentation in the same development cycle.
 
-Keep `docs/EXPERIMENT_PLAN.md`, `docs/TECHNICAL_BASELINE.md`, and experiment-specific documentation synchronized with:
+Keep the root [`README.md`](../README.md), `docs/EXPERIMENT_PLAN.md`, `docs/TECHNICAL_BASELINE.md`, and experiment-specific documentation synchronized with:
 
 - the questions being tested;
-- major experiment groups;
+- major experiment groups and design-completion status;
 - comparison baselines;
 - measurement semantics;
 - interpretation boundaries;
 - volatile runtime assumptions;
 - runtime capability gates and unsupported configurations.
+
+When a volatile architecture/runtime/hardware fact is reverified, update the verification date and primary reference in `TECHNICAL_BASELINE.md` if the change affects project validity or runtime selection.
 
 The documentation describes the intended evidence. The code and raw measurements determine what was actually executed.
