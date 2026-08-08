@@ -6,7 +6,7 @@ The objective is to re-evaluate the main systems claims behind Strata under mode
 
 The experiment suite is organized around causal questions rather than one-to-one figure reproduction. Each group must be broad enough to support a credible conclusion while avoiding repeated measurements that answer the same question.
 
-The project uses `KV/state` as an umbrella term. Attention KV, sliding-window/local KV, and recurrent/linear-attention state are separated whenever the runtime exposes them. Current model and runtime facts are tracked in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md).
+The project uses `KV/state` as an umbrella term. Attention KV, sliding-window/local KV, and recurrent/linear-attention state are separated whenever the runtime exposes them. Current model, runtime, hardware, and granularity facts are tracked in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md).
 
 ## 2. Experiment groups
 
@@ -77,33 +77,45 @@ Detailed designs and shared validity rules are maintained under `experiments/hie
 
 ### 2.3 Page granularity and GPU-assisted I/O
 
-**Question:** Does fine-grained caching still improve reuse at the cost of fragmented I/O, and can GPU-assisted I/O recover transfer efficiency without sacrificing reuse?
+**Question:** Does fine-grained caching still improve effective reuse at the cost of fragmented I/O, and can GPU-assisted I/O recover transfer efficiency without imposing an excessive GPU compute cost?
 
-Control two primary factors:
+This group contains four experiments:
 
-- cache page granularity;
-- I/O mechanism.
+1. **Page Size vs. Cache Reuse**: sweep only supported page sizes under a fixed attention backend and quantify effective reuse / page-boundary loss;
+2. **Page Size vs. I/O Efficiency**: first isolate page/transfer fragmentation with controlled logical bytes, then validate whether the effect enters the serving critical path;
+3. **GPU-Assisted I/O Compensation**: at representative page-size operating points, compare the same logical restore workload under standard-copy and GPU-assisted I/O;
+4. **GPU Compute Cost and Net Benefit**: measure prefill/decode interference from GPU-assisted I/O and determine whether I/O stall reduction survives as an end-to-end benefit.
 
-Measure three layers of behavior.
+The primary mechanism path is SGLang HiCache because it exposes an explicit `page_size` together with `direct` and `kernel` CPU-GPU I/O backends. The exact runtime build, attention backend, host-memory layout, write policy, and hybrid-state support must pass the group validity gate before serving-level results are reported.
 
-**Cache layer**
+Primary observations include:
 
-- cache hit rate;
-- effectively reused tokens or state.
+**Reuse layer**
+
+- effective reused tokens;
+- reuse efficiency relative to the logically reusable prefix;
+- cache hit / occupancy / eviction supporting counters.
 
 **I/O layer**
 
-- sustained host-to-GPU bandwidth;
-- bandwidth utilization;
-- transfer size distribution.
+- actual CPU→GPU restore bytes;
+- observed transfer/operation granularity;
+- sustained host→GPU bandwidth;
+- bandwidth utilization relative to a matched reference;
+- restore duration and non-overlapped I/O stall.
 
-**GPU layer**
+**GPU / serving layer**
 
-- prefill throughput;
-- decode throughput;
-- interference between I/O work and model computation.
+- prefill throughput and execution time;
+- decode throughput and per-token latency;
+- GPU-assisted I/O overlap / interference evidence;
+- TTFT, request completion time, and overall throughput.
 
-The goal is to reconstruct the causal chain from cache granularity to reuse, transfer efficiency, and final compute impact. The experiment must distinguish raw transfer duration from non-overlapped I/O stall so asynchronous overlap is not double counted.
+Configured page size must not be used as a substitute for observed transfer size. CPU→GPU restore traffic must also be separated from GPU→CPU backup/write-back traffic.
+
+If an alternative runtime decouples prefix-match granularity from physical cache/transfer granularity, Experiments 1 and 2 must treat those as separate variables rather than pretending they share one page-size axis.
+
+Detailed designs and shared conventions are maintained under `experiments/page-granularity-gpu-assisted-io/`.
 
 ---
 
@@ -214,7 +226,7 @@ Bottleneck still exists?
         ↓
 Is hierarchy itself useful?
         ↓
-Where does I/O inefficiency come from?
+Where does I/O inefficiency come from, and can it be repaired economically?
         ↓
 When does scheduling help?
         ↓
@@ -230,9 +242,11 @@ If an earlier premise is no longer true on modern models, later results must be 
 For every reported experiment:
 
 - record exact model identifier and revision;
-- record hardware, driver, CUDA/runtime, serving-engine version or commit, and relevant cache feature flags;
+- record hardware, topology, driver, CUDA/runtime, serving-engine version or commit, and relevant feature flags;
 - record workload definition and token-length convention;
 - record cache-residency mode and cache/state policy;
+- explicitly record all granularity controls rather than a generic `page size` label when the runtime exposes multiple granularities;
+- explicitly pin runtime defaults that can affect results, including I/O backend, host layout, write policy, and attention backend where relevant;
 - keep raw measurements separate from processed plots;
 - repeat measurements when variance is non-negligible;
 - preserve failed or negative results when they affect interpretation;
