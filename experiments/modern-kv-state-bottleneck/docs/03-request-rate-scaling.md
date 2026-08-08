@@ -2,201 +2,167 @@
 
 ## 1. 实验目标
 
-本实验用于研究在 context length 和 shared-prefix ratio 固定的情况下，随着 serving load 增长，现代模型的 cache/state loading 是否从局部开销演化为系统级瓶颈。
+本实验用于研究在 context length 和 shared-prefix ratio 固定的情况下，随着 request arrival pressure 增长，现代模型的 cache/state restore cost 是否会从单请求局部开销放大为系统级 bottleneck。
 
-实验主要回答以下问题：
+实验主要回答三个问题：
 
-1. request rate 增长时，CPU-GPU state transfer、I/O stall 和 TTFT 如何变化。
-2. 系统是否存在明显的负载阈值，在该阈值之后 state loading 开始造成排队、资源竞争和 TTFT 快速恶化。
-3. Qwen3.5 与 Gemma 4 在高负载下的瓶颈演化是否一致。
+1. offered request rate 增长时，CPU-GPU state traffic、non-overlapped I/O stall、queueing 和 TTFT 如何变化；
+2. 系统是否存在明确的 saturation region，在该区域 state restore contention 开始显著放大 tail latency 或限制 throughput；
+3. Qwen3.5 与 Gemma 4 在相对于各自 capacity 的相似负载水平下，瓶颈演化是否一致。
 
-这一实验关注负载放大效应。实验一研究 context scaling，实验二研究 reuse scaling，实验三研究同一 workload 在不同 serving pressure 下是否暴露新的 state bottleneck。
+本实验的主要自变量是 request arrival rate。Active concurrency 是由 arrival pressure 与 service time 共同产生的观测量，不再作为第二个独立 sweep 变量。
 
 ## 2. 实验对象
 
-实验分别使用：
+实验分别使用 Qwen3.5-9B 与 Gemma 4 12B。
 
-- Qwen3.5-9B
-- Gemma 4 12B
+主实验继续使用 A100 40GB，并保持与 Experiments 1-2 一致的模型 precision、runtime 与 cache policy。
 
-两个模型保持各自原生 attention、cache 和 state 机制。
-
-主实验继续使用 A100 40GB，与实验一和实验二保持相同硬件环境。
+正式运行前必须确认 CPU-resident hit 对两个模型的目标 cache/state groups 均有效。
 
 ## 3. 固定 workload
 
-实验固定一个具有代表性的 long-context reuse workload。
+主实验固定为 long-context reuse workload：
 
-主实验设置：
+- total context length：32,768 tokens；
+- shared prefix：16,384 tokens；
+- unique suffix：16,384 tokens；
+- shared-prefix ratio：50%；
+- cache residency：CPU-resident hit；
+- output length：固定且较短；
+- input modality：text-only。
 
-- total context length 固定为 32K；
-- shared-prefix ratio 固定为 50%；
-- unique suffix 固定为 50%；
-- output length 保持固定且较短；
-- shared prefix 对应的 cache/state 在实验开始前已经位于 CPU cache 中。
+这一配置同时保留可观测的 residual prefill computation 与 CPU-GPU state restore demand，适合研究高负载下两类资源的竞争关系。
 
-因此，每个请求都具有：
+如果 32K 在其中一个模型上无法形成稳定的完整负载曲线，则正式 cross-model load comparison 使用两个模型都能稳定运行的最大公共 context point。任何降级必须在运行前固定并记录，而不能只对某些高负载点临时改变 context。
 
-```text
-16K shared prefix
-+
-16K unique suffix
-```
+## 4. Capacity calibration
 
-这一配置同时具有明显的 prefill computation 和 state loading，适合观察两类成本在高负载下的竞争关系。
+正式 sweep 前分别对两个模型执行短的 capacity calibration。
 
-如果 32K 在某个模型上无法形成稳定的完整负载曲线，则使用该模型能够稳定运行的最大公共 context length，但同一模型的所有 request-rate 点必须保持相同 workload。
+Calibration 用于估计当前固定 workload 下的 sustainable capacity。Sustainable capacity 的定义遵循 `00-measurement-conventions.md`：achieved throughput 能够跟随 offered load，并且请求队列不存在持续增长趋势。
 
-## 4. 核心自变量
+正式 sweep 的相对负载点根据 calibration 结果确定。建议覆盖以下区域：
 
-本实验将 request arrival rate 作为主要自变量。
+- 明显低负载；
+- 约半负载；
+- 中高负载；
+- 接近 saturation；
+- saturation 附近；
+- 轻度 overload。
 
-不同时 sweep context length 和 shared-prefix ratio。
+最终采用约 6-8 个点即可。具体 requests/s 在 calibration 后写入配置并冻结，正式运行过程中不再根据结果临时调整。
 
-request rate 从明显低于系统处理能力的低负载开始，逐步提升到接近系统饱和，并继续增加到能够观察明显 queueing 的高负载区域。
+同时保存：
 
-正式实验选择约 6 到 8 个负载点，覆盖：
+- absolute offered requests/s；
+- achieved requests/s；
+- normalized load。
 
-1. 低负载；
-2. 中低负载；
-3. 中等负载；
-4. 接近饱和；
-5. 饱和附近；
-6. 高于饱和。
+## 5. Concurrency 的处理
 
-具体 requests/s 不预先固定，而是在两种模型上分别根据其实际 serving capacity 确定。
+本实验不进行独立 concurrency sweep。
 
-这样可以避免因两个模型的基础处理能力不同而导致不公平比较。
+设置足够高且固定的 concurrency ceiling，使正常负载区域不会因人为上限提前截断。实际 active concurrency 随 arrival pressure 自然变化，并作为结果记录。
 
-## 5. 负载范围确定
+因此，本实验研究的是：
 
-正式实验前首先进行一次短的 capacity calibration。
+> arrival pressure → active concurrency/resource contention → queueing/stall → throughput and TTFT
 
-该阶段估计每个模型在当前 workload 下能够稳定处理的大致最大 request rate。
+## 6. Cache-residency 条件
 
-随后正式实验按照该 capacity 的相对比例设置负载，包括明显低于 capacity、约半负载、中高负载、接近 capacity、capacity 附近和超过 capacity 的配置。
+主实验使用 **CPU-resident hit**。
 
-最终比较时同时保留实际 requests/s 和相对于模型 capacity 的 normalized load。
+每个请求的 shared prefix 已经存在于 CPU/offload tier，需要在请求执行过程中恢复所需 cache/state，然后计算 unique suffix。
 
-这样能够避免仅仅因为 Qwen3.5 和 Gemma 4 的基础速度不同，就错误判断其中一个模型更容易发生状态瓶颈。
+为了判断 hierarchical reuse 的高负载价值，选择少量代表性 load points 增加：
 
-## 6. Concurrency 的处理
+### Recompute baseline
 
-本实验不再单独进行完整的 concurrency sweep。
+不恢复共享 prefix，完整重新计算 context。
 
-request arrival rate 作为主要负载控制变量，系统中的 active concurrency 随 workload 自然变化，并作为观测指标记录。
+建议至少覆盖低负载、接近 saturation 和高负载区域。
 
-这样可以避免同时改变 request rate 与 concurrency 形成大规模二维实验，并避免重复验证相同的 saturation phenomenon。
+### GPU-resident hit control
 
-同时设置一个足够高但固定的 concurrency limit，使正常负载范围内系统不会因为人为并发上限提前受到限制。
+如果 runtime 能够可靠控制 GPU residency，可在低负载和接近 saturation 的代表点加入该条件，用于区分 CPU restore contention 与 prefix reuse 本身的开销。
 
-因此实验研究的是 arrival pressure 如何自然转化为 active concurrency、资源竞争和排队。
+这两个控制条件不是新的完整 load sweep。
 
-## 7. Cache 条件
+## 7. 核心测量指标
 
-主实验使用 warm hierarchical cache。
-
-每组请求的 shared prefix 已经完成 cache/state 构建，并保存在 CPU 侧。
-
-正式请求执行过程中需要：
-
-1. 加载 shared-prefix state；
-2. 对 unique suffix 执行 prefill；
-3. 进入正常 decode。
-
-所有 request-rate 配置保持相同 cache policy。
-
-实验不改变 cache capacity，不人为制造 cache eviction。
-
-这样可以将重点限制在多个请求同时需要 state loading 时产生的系统压力。
-
-cache locality 和 eviction behavior 留给后续 scheduler/cache-locality 实验研究。
-
-## 8. Baseline
-
-实验保留一个 cold recomputation baseline。
-
-该 baseline 在相同 workload 和 request-rate 条件下不加载已有 shared-prefix state，而是重新计算完整 context。
-
-不需要在所有极端负载点完整重复一套实验，可以选择低负载、接近 saturation 和高负载三个代表性区间进行对照。
-
-这一设计用于判断随着并发压力增加，hierarchical cache 相对于 recomputation 的优势是在扩大、保持稳定，还是逐渐消失。
-
-## 9. 核心测量指标
-
-### A. Throughput
+### 7.1 Offered load 与 achieved throughput
 
 记录：
 
 - offered request rate；
 - achieved throughput。
 
-得到：
+形成：
 
 > Offered load → achieved throughput
 
-当 request rate 继续增加而 throughput 不再明显增长时，可以确定系统进入 saturation 区域。
+当 offered load 继续增加而 achieved throughput 进入平台，同时 queue 持续增长时，将该区域标记为 overload，而不是把它当作稳定 capacity point。
 
-### B. Active concurrency
+### 7.2 Active concurrency
 
-记录不同 request rate 下系统中实际同时处理的请求数量。
+记录稳定观测窗口中的平均与峰值 active requests。
 
-得到：
+形成：
 
-> Request rate → active concurrency
+> Offered load → active concurrency
 
-这一指标用于描述负载增加如何转化为同时存在的 context/state。
+这一结果用于说明 arrival pressure 如何转化为同时存在的 execution/cache-state pressure。
 
-### C. Cache/state memory pressure
+### 7.3 Cache/state memory pressure
 
 记录：
 
-- GPU cache/state memory usage；
-- CPU cache/state usage；
-- workload 增长时的峰值状态占用。
+- GPU resident cache/state footprint；
+- CPU/offload tier footprint；
+- 峰值与稳定区间使用量；
+- 能够获取时的 state-type breakdown。
 
-重点观察高并发是否导致 GPU state residency 明显增长，并进一步产生显存压力。
+重点观察高负载是否导致 GPU residency、allocator pressure 或 restore concurrency 明显增加。
 
-### D. CPU-GPU traffic
+### 7.4 CPU-GPU traffic
 
-记录单位时间内：
+记录：
 
-- CPU-GPU state transfer volume；
-- sustained transfer bandwidth。
+- transferred bytes per request；
+- transferred bytes per second；
+- achieved transfer bandwidth；
+- transfer activity/duration。
 
-分别观察：
+理论上固定 workload 下每请求 transfer volume 应在同一 residency policy 下基本稳定。若 bytes/s 继续增长而 achieved bandwidth 接近平台，则表明 I/O path 接近资源上限。
 
-- traffic per request；
-- traffic per second。
+Raw transfer duration 允许与 computation 重叠，不直接作为 TTFT additive component。
 
-每请求 transfer volume 理论上应基本稳定，而单位时间 traffic 会随 request rate 增长。
+### 7.5 Non-overlapped I/O stall
 
-如果单位时间需求不断增长，而实际 transfer throughput 接近平台期，则说明 I/O path 开始接近饱和。
+记录真正阻塞 service path 的 restore stall。
 
-### E. I/O stall
+主要使用：
 
-记录每个请求的 state-loading stall，并计算：
+```text
+service stall ratio = I/O stall / service time
+```
 
-\[
-\text{I/O Stall Ratio}
-=
-\frac{\text{I/O stall time}}
-{\text{request service time}}
-\]
+同时可以报告：
 
-重点观察这一比例是否随着 request rate 增长。
+```text
+TTFT stall contribution = I/O stall / TTFT
+```
 
-如果低负载下 I/O stall 较小，而高负载下迅速增加，则说明 bottleneck 不是单个请求的 state size 本身，而是并发 state movement 产生的资源竞争。
+前者用于判断 execution path 是否越来越 I/O-bound，后者用于观察 end-to-end 影响。
 
-### F. Queueing delay
+### 7.6 Queueing delay
 
-单独记录请求进入系统后到真正开始执行之间的等待时间。
+单独记录请求 arrival 到 service 开始之间的等待时间。
 
-这一指标必须与实际 execution latency 分开。
+Queueing 必须与 execution/service latency 分开，否则高负载下无法判断 TTFT 恶化来自请求本身变慢，还是系统已经进入排队放大阶段。
 
-否则高负载下 TTFT 增加之后无法判断请求本身变慢了，还是只是前面的请求排队更多了。
-
-### G. TTFT
+### 7.7 TTFT
 
 记录：
 
@@ -204,191 +170,106 @@ cache locality 和 eviction behavior 留给后续 scheduler/cache-locality 实�
 - P90 TTFT；
 - P99 TTFT。
 
-这一实验相比实验一和实验二更需要关注 tail latency。
+Experiment 3 将 tail latency 作为核心结果，因为资源 contention 往往先反映在 P90/P99，而不是 median。
 
-高负载下 state loading contention 即使对 median 影响有限，也可能首先表现为 P90/P99 的明显恶化。
+## 8. TTFT decomposition
 
-## 10. TTFT 分解
+统一使用：
 
-将 TTFT 至少区分为：
+```text
+TTFT = queueing + service time
+service time = compute-path time + non-overlapped I/O stall + other service overhead
+```
 
-\[
-TTFT
-=
-Queueing
-+
-Prefill/Execution
-+
-State\ Loading/Stall
-+
-Other
-\]
+Transfer duration 是资源活动区间，在与 computation overlap 时不能再次加进 service time。
 
-实验不要求构建极其细粒度的时间模型，但必须能够区分：
+任何无法严格拆分的时间段都放入 `other service overhead`，而不是强行归类到 I/O 或 computation。
 
-- queueing amplification；
-- computation pressure；
-- state/I/O pressure。
+## 9. 实验执行方式
 
-这是实验三能否真正解释 saturation 的关键。
+每个 request-rate 配置包含 warm-up 与固定的稳定观测窗口，并进行多次重复运行。
 
-## 11. 实验执行方式
+正式结果报告：
 
-每个 request-rate 配置持续运行足够长的稳定窗口。
-
-正式统计之前设置 warm-up 阶段，使模型、cache 和 serving runtime 进入稳定状态。
-
-每个负载点重复运行多次。
-
-主要报告：
-
-- P50；
-- P90；
-- P99；
-- median throughput；
+- achieved throughput；
+- P50/P90/P99 TTFT；
+- queueing distribution；
+- service stall ratio；
+- transfer bandwidth；
+- active concurrency；
 - 波动范围。
 
-如果某一 request rate 下请求队列持续增长而无法回落，则将该点定义为 unstable overload，而不是继续无限等待所有请求完成。
+如果某个 load point 出现持续增长的 queue，则该点标记为 `unstable overload`。该点仍保留 raw data，但不与稳定点混在一起计算 steady-state latency。
 
-## 12. 实验顺序
+## 10. 实验顺序与状态恢复
 
-request rate 不只按照从低到高的单一顺序执行。
+正式测试不只按照从低到高的单一顺序执行。
 
-正式测试采用交替或随机顺序，例如：
+采用交替或随机化顺序，降低 thermal state、allocator history 或 cache residue 对曲线的系统性影响。
 
-```text
-low → medium → low → high → medium → saturation
-```
+每个配置开始前恢复到同一 cache-residency 初始条件，并确认目标 prefix 位于规定 tier。
 
-这样可以检查高负载运行之后是否存在残留状态，对后续实验产生系统性影响。
+## 11. 最终结果组织
 
-每个负载点之间恢复到统一的初始 cache 和系统状态。
+实验形成五组核心结果。
 
-## 13. 最终结果组织
+### 图 1：Offered Load → Achieved Throughput
 
-建议形成五组核心图。
+用于识别 sustainable region、saturation region 与 overload。
 
-### 图 1：Load → Throughput
+### 图 2：Normalized / Absolute Load → P50/P90/P99 TTFT
 
-```text
-Offered request rate → Achieved throughput
-```
+绝对 load 用于描述真实 capacity，normalized load 用于跨模型比较接近各自 capacity 时的行为。
 
-用于确定系统 saturation point。
+### 图 3：Load → CPU-GPU Traffic
 
-### 图 2：Load → TTFT
+展示 bytes/s、achieved bandwidth 和必要的 per-request transfer volume。
 
-同时绘制：
+### 图 4：Load → I/O Stall and Queueing
 
-- P50；
-- P90；
-- P99。
+分别展示 service stall ratio 与 queueing delay，避免把 I/O contention 和排队放大混为一谈。
 
-用于观察 latency cliff 和 tail-latency amplification。
+### 图 5：Representative Load → TTFT Composition
 
-### 图 3：Load → CPU-GPU traffic
+选择低负载、中高负载、接近 saturation 和 overload 前缘的代表点，展示 queueing、compute path、non-overlapped I/O stall 和 other overhead。
 
-同时展示：
-
-- requested transfer rate；
-- achieved transfer bandwidth。
-
-用于判断 I/O path 是否逐渐饱和。
-
-### 图 4：Load → I/O stall / Queueing
-
-分别展示：
-
-- I/O stall；
-- queueing delay。
-
-用于确定 TTFT 恶化来自哪里。
-
-### 图 5：Load → TTFT composition
-
-选取低、中、接近 saturation、高负载四个代表点，对 TTFT 进行组成分析。
-
-这张图用于解释系统为什么在某个负载以后开始明显恶化。
-
-## 14. 结果判断逻辑
+## 12. 结果判断逻辑
 
 ### 情况 A：I/O bottleneck 随负载显现
 
-低负载下 state loading 成本较小，但随着 request rate 提高：
+低负载下 CPU restore cost 较小，但随着 request rate 提高，transfer bandwidth 接近平台、service stall ratio 上升、tail TTFT 明显恶化，并最终限制 achieved throughput。
 
-- CPU-GPU bandwidth 接近平台；
-- I/O stall 快速增加；
-- P90/P99 TTFT 明显恶化；
-- throughput 最终饱和。
-
-结论是：
-
-> 现代模型的 state bottleneck 具有明显的 load-dependent 特征。单请求下问题可能并不严重，但在 serving concurrency 增长后会成为系统瓶颈。
-
-这是对 Strata motivation 很重要的支持。
+该结果说明 state bottleneck 具有明显 load-dependent 特征。
 
 ### 情况 B：主要由 computation saturation 导致
 
-request rate 增长后系统进入 saturation，但：
+如果系统进入 saturation，但 achieved transfer bandwidth 仍有余量、service stall ratio 基本稳定，而 computation/service time 与 queueing 主导 TTFT，则说明当前 workload 的主要高负载瓶颈不是 state movement。
 
-- state transfer 没有接近瓶颈；
-- I/O stall ratio 基本稳定；
-- 主要增长来自 prefill execution 和 queueing。
+### 情况 C：Hierarchical reuse 的优势随负载减弱
 
-结论是：
+如果低负载下 CPU-resident hit 明显优于 recompute，但接近 saturation 后两者差距缩小，同时 CPU restore contention 增强，则说明 hierarchical cache 仍有基础价值，但其高负载收益受到 state movement 限制。
 
-> 现代模型在该 workload 下的高负载瓶颈主要来自 computation，而不是 state movement。
+### 情况 D：两个模型的 saturation path 不同
 
-这种情况下 Strata 类 I/O 优化对整体 capacity 的价值会受到限制。
+如果一个模型首先进入 state/I/O pressure，而另一个首先进入 computation pressure，则结论限定为 serving bottleneck evolution 具有 model-dependent 特征。
 
-### 情况 C：hierarchical cache 的优势随负载减弱
+本实验不把该差异直接归因于 attention architecture。
 
-低负载下：
+## 13. 与前两个实验的关系
 
-\[
-TTFT_{warm} < TTFT_{cold}
-\]
-
-但随着负载提高，两者差距不断缩小。
-
-结论是：
-
-> prefix reuse 本身仍然有效，但 concurrent state loading 削弱了 hierarchical caching 在高负载 serving 中的实际收益。
-
-这说明问题重点已经从“cache 有没有价值”转变为“cache 能否高效地被加载”。
-
-### 情况 D：模型之间出现不同 saturation behavior
-
-例如一个模型首先遇到 state-transfer saturation，而另一个首先遇到 computation saturation。
-
-此时结论应限定为：
-
-> 现代模型的 serving bottleneck 随负载增长具有明显 model-dependent behavior。
-
-这一实验不能单独把差异归因于 attention architecture，后续模型泛化实验再结合两个模型的 state structure 进行解释。
-
-## 15. 与前两个实验的关系
-
-三组实验形成一个正交设计：
-
-| 实验 | 主要变量 | 回答的问题 |
+| Experiment | Primary variable | Question |
 |---|---|---|
-| Experiment 1 | Context length | context 变长是否放大 state bottleneck |
-| Experiment 2 | Shared-prefix ratio | reuse 增长的计算收益是否被 loading cost 抵消 |
-| Experiment 3 | Request rate | serving load 是否将 state cost 放大为系统瓶颈 |
+| 1 | Context length | 长 context 是否放大 state pressure |
+| 2 | Shared-prefix ratio | reuse 收益是否被 restore cost 抵消 |
+| 3 | Request arrival rate | serving load 是否将 state cost 放大为系统瓶颈 |
 
-因此实验三不再 sweep context length、prefix ratio、cache locality 或 scheduler policy。
+三个实验共同形成：
 
-三个实验共同形成以下因果链：
+```text
+state behavior
+→ reuse/restore cost
+→ concurrent restore pressure
+→ TTFT / throughput degradation
+```
 
-\[
-\text{State size}
-\rightarrow
-\text{State reuse/loading}
-\rightarrow
-\text{Concurrent loading pressure}
-\rightarrow
-\text{TTFT / throughput degradation}
-\]
-
-这构成“现代模型上的 KV / 状态瓶颈画像”这一部分的主体证据。
+统一 measurement definitions 见 [00-measurement-conventions.md](00-measurement-conventions.md)。
