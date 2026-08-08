@@ -47,7 +47,9 @@ code/
 ├── analysis/
 │   ├── __init__.py
 │   ├── exp1_analysis.py         # raw → processed CSV
-│   └── exp2_analysis.py         # raw → processed CSV
+│   ├── exp2_analysis.py         # raw → processed CSV
+│   └── exp4_synthesis.py        # 跨模型综合（复用 exp1/2/3 summary）
+│   └── exp4_figures.py          # 跨模型 4 组图（需要 matplotlib）
 ├── validate.py                  # Validation gate（recompute 跳过 cache-hit 检查）
 ├── run_exp1.py / run_exp1.sbatch / submit_exp1.sh
 ├── run_exp2.py / run_exp2.sbatch / submit_exp2.sh
@@ -97,3 +99,21 @@ python3 code/analysis/exp1_analysis.py \
     --input-dir results/exp1/qwen/ \
     --output-dir results/exp1/processed/
 ```
+
+### Experiment 4 (cross-model synthesis)
+
+```bash
+# 跨模型综合：读 exp1/exp2/exp3 的 summary.json → processed CSV
+python3 code/analysis/exp4_synthesis.py \
+    --exp1-dir results/exp1/ \
+    --exp2-dir results/exp2/ \
+    --exp3-dir results/exp3/ \
+    --output-dir results/exp4/processed/
+
+# 生成 4 组跨模型图（需要 matplotlib，服务器 qwen env 未安装）
+python3 code/analysis/exp4_figures.py \
+    --input-dir results/exp4/processed/ \
+    --output-dir results/exp4/figures/
+```
+
+exp4 只复用 exp1/2/3 的结果，不产生新测量。`exp4_synthesis.py` 自动归一化模型标识（qwen/Qwen3.5-9B → qwen），exp1 的 prefix_ratio 按设计固定 0.5；缺失的 mode（如 gpu_hit/cpu_hit 尚无数据）在 CSV 中留空并在 `synthesis_report.json` 记录可用性，不中断。
