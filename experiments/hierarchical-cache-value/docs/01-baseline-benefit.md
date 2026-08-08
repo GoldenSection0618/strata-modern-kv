@@ -4,188 +4,195 @@
 
 本实验用于建立 hierarchical cache 的基础收益基线。
 
-实验在相同模型、相同请求负载和相同 GPU cache budget 下，对比 **GPU-only cache** 与 **GPU + CPU hierarchical cache** 两种系统配置，并分别考察 cold-cache 与 warm-cache 场景。
+实验在相同模型、相同 workload、相同 GPU cache budget 和相同 serving load 下，对比 **GPU-only** 与 **GPU + CPU hierarchical cache**，并分别考察 cold-cache 与 warm-cache。
 
 本实验主要回答三个问题：
 
-1. 当 GPU HBM 无法长期保存全部可复用 context/state 时，将被驱逐状态保留在 CPU 是否比直接丢弃并重新计算更有收益；
-2. hierarchical cache 的收益是否主要来自减少 recomputation；
-3. CPU-GPU transfer cost 是否会抵消额外 cache reuse 带来的收益。
+1. 当 GPU 无法长期保留全部 reusable state 时，CPU tier 是否能够减少后续 recomputation；
+2. 这种 recomputation reduction 是否能够转化为 TTFT 或 throughput 收益；
+3. CPU-GPU restore traffic 和 non-overlapped stall 是否会抵消复用收益。
 
-本实验不负责确定 hierarchy 在所有 cache pressure 与 reuse ratio 下的完整适用边界。GPU cache pressure 和 prefix reuse 的系统 sweep 留到后续实验完成。
+本实验不负责确定完整的 cache-pressure 或 reuse 适用边界。GPU cache pressure 和 prefix reuse 分别由 Experiments 2 和 3 隔离研究。
 
-## 2. 对照配置
+所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
 
-实验设置两种 cache architecture。
+## 2. 实验对象与执行平台
+
+Experiments 1–3 使用一个通过 full-hierarchy validation gate 的 primary model，在 A100 40GB 上执行完整 sweep。
+
+默认候选为 Qwen3.5-9B。如果 pinned runtime 无法验证 attention KV 与 Gated DeltaNet recurrent state 的完整 CPU restore，则不得把该路径视为 full hierarchy。此时按 `00-common-conventions.md` 切换到已验证 primary model，并把 Qwen3.5 标记为 `partial` 或 `unsupported`。
+
+本实验只使用 text-only requests。
+
+## 3. 对照配置
 
 ### GPU-only
 
-系统只使用 GPU HBM 保存可复用 cache/state。GPU cache 被淘汰后，对应状态不再保留。后续再次访问相同 prefix 时，需要重新计算已经失效的部分。
+Reusable cache/state 可以保留在 GPU 中。状态被 GPU cache 淘汰后不再可用，后续再次访问对应 prefix 时需要重新计算缺失部分。
 
 ### GPU + CPU hierarchical cache
 
-系统同时使用 GPU 与 CPU 保存可复用 cache/state。GPU 中被淘汰但仍具有复用价值的状态可以保留在 CPU tier。后续再次访问相同 prefix 时，可以从 CPU 恢复对应状态，而不是重新计算全部内容。
+GPU 使用与 GPU-only 完全相同的 cache budget。被 GPU 淘汰的 reusable state 可以进入经过验证的 CPU tier，并在后续命中时恢复到 GPU。
 
-两种配置使用相同的 GPU cache budget，使实验比较的是 CPU hierarchy 本身带来的增量价值，而不是更大的 GPU cache 容量。
+CPU tier 容量保持足够，使 CPU eviction 不成为本实验中的第二个容量变量。
 
-## 3. Cache initial state
-
-实验分别设置 cold-cache 与 warm-cache 两种初始状态。
+## 4. Cache initial state
 
 ### Cold-cache
 
-每轮测试开始前清空待测 cache/state，使正式 workload 从无历史复用状态开始运行。
+每轮正式 workload 开始前清空待测 reusable cache/state。
 
-Cold-cache 用于观察 hierarchy 是否能够随着请求执行逐步积累可复用状态，并最终减少后续 recomputation。
+Cold-cache 用于观察 hierarchy 是否能在系统运行过程中逐步积累可复用状态，并在后续 revisit 中减少 recomputation。
 
 ### Warm-cache
 
-正式计时前执行固定的 cache population workload，使系统已经积累一定数量的可复用 context/state。
+正式计时前执行固定的 cache-population trace。预热阶段不进入正式性能统计。
 
-预热阶段不计入正式性能结果。GPU-only 与 hierarchical 两种配置使用完全相同的预热请求与访问顺序。
+GPU-only 与 hierarchical 使用相同的预热请求和访问顺序。正式测量开始前需要记录实际 GPU/CPU residency 和 cache occupancy，不能仅根据执行过 warm-up 就假定 warm state 建立成功。
 
-Warm-cache 用于模拟长期运行的 serving 系统，并判断 CPU tier 是否能够扩大可长期保留的有效 working set。
+Warm-cache 用于模拟已经积累历史 context/state 的长期 serving 状态。
 
-## 4. 实验矩阵
-
-基础实验形成四种主要配置：
+## 5. 实验矩阵
 
 | Cache architecture | Initial state |
 |---|---|
 | GPU-only | Cold |
 | GPU-only | Warm |
-| Hierarchical cache | Cold |
-| Hierarchical cache | Warm |
+| Hierarchical | Cold |
+| Hierarchical | Warm |
 
 除 cache architecture 与 initial state 外，其余条件保持一致。
 
-## 5. Workload 设计
+## 6. Workload 设计
 
-实验使用具有明确 prefix reuse 的请求集合。
+实验使用由多个 shared-prefix groups 组成的固定请求 trace。
 
-请求集合由多个 shared-prefix groups 构成。同一 group 内的请求共享主要输入 context，并具有不同的后续 query 或 generation 部分。不同 group 之间相互独立，避免所有请求集中在单个 prefix 上形成过度理想化的 workload。
+同一 group 内的请求共享固定长度的 prefix，并具有不同的 suffix/query。不同 group 之间相互独立，避免所有请求集中到单个热点 prefix。
 
-本实验固定 prefix reuse 水平和 GPU cache pressure，使系统具有实际 eviction 与 reuse 机会，同时避免在基础实验中引入多维 sweep。
+本实验选择一个代表性的中等 reuse 和中等偏高 reusable-cache pressure，使系统能够稳定产生 GPU eviction 和后续 revisit，同时避免进入严重 thrashing。
 
-各配置使用完全相同的请求集合和请求顺序，使 GPU-only 与 hierarchical cache 面对相同的 reuse opportunity 与访问轨迹。
+该代表性配置在正式实验前通过 calibration 确认，并在所有四个配置中保持不变。
 
-输出长度和 serving load 保持固定，避免 decode workload 与 queueing 成为主要干扰变量。
+Request count、request ordering、input/output token distribution、offered load 和 scheduler policy 全部固定。
 
-## 6. Cold-cache 实验流程
+## 7. Validity conditions
 
-Cold-cache 实验在每轮正式测试前恢复到空 cache 状态。
+每个正式 run 必须满足以下条件：
 
-第一阶段请求从无历史状态开始执行。随着请求继续到达，GPU cache 逐步建立并产生容量压力。
+- full-hierarchy restore path 已通过数值与 residency 验证；
+- GPU-only 与 hierarchical 的 GPU cache budget 完全一致；
+- CPU tier 不发生未控制的 capacity eviction；
+- 固定 serving load 下不发生 active-request preemption；
+- cold/warm 初始状态能够被观测并重复建立；
+- CPU restore failure 不得静默退化为 recomputation。
 
-当可复用状态被 GPU cache 淘汰后，GPU-only 配置直接失去这些状态，hierarchical 配置则允许其中可复用部分进入 CPU tier。
+任何不满足条件的 run 均保留 raw result，但标记为 invalid、partial 或 unsupported，不进入主结果汇总。
 
-后续再次访问相同 prefix 时，比较两种配置的 cache hit、recomputation、CPU-GPU traffic、TTFT 与 throughput。
+## 8. Cold-cache 实验流程
 
-Cold-cache 结果同时观察整个运行阶段和随请求进程变化的指标，避免初始 cache population 阶段掩盖后期 hierarchy 收益。
+每轮首先恢复空 cache 状态，然后执行完整固定 trace。
 
-本部分主要判断：
+运行初期两种架构都需要建立状态。随着请求继续到达，GPU cache 开始产生容量竞争。
 
-> hierarchical cache 是否能够在系统运行过程中逐步积累复用收益，以及这种收益是否最终反映到用户可见性能上。
+GPU-only 中，被驱逐的 reusable state 在后续 revisit 时需要重新计算。Hierarchical 配置中，被驱逐状态如果成功保留在 CPU，则通过 restore 避免对应 recomputation。
 
-## 7. Warm-cache 实验流程
+Cold-cache 结果同时报告全程 aggregate 指标和按请求序列位置划分的阶段性指标，避免初始 population 阶段掩盖后续 hierarchy 收益。
 
-Warm-cache 实验首先执行固定的 cache population 阶段。
+## 9. Warm-cache 实验流程
 
-预热阶段结束后立即执行正式 workload，并保持已经形成的 cache 状态不被人为清除。
+每轮先执行固定 cache-population trace，并验证 cache occupancy/residency。
 
-GPU-only 与 hierarchical 配置经历相同的历史访问过程，但由于 cache architecture 不同，两者在正式 workload 开始时实际保留下来的 reusable working set 可以不同。
+预热完成后立即执行正式 workload。两种架构经历相同访问历史，但由于 cache architecture 不同，正式阶段开始时能够保留的 reusable working set 可以不同。
 
-正式阶段继续使用与 cold-cache 相同结构的 workload，并比较两种 cache architecture 的 cache reuse、recomputation、CPU-GPU traffic、TTFT 与 throughput。
+Warm-cache 重点判断 CPU tier 是否扩大了长期可复用 working set，以及这种额外复用是否产生稳定端到端收益。
 
-本部分主要判断：
+## 10. 核心观测指标
 
-> 当 serving 系统已经积累大量历史 context/state 后，CPU cache 是否能够显著扩大可复用状态的有效容量，并产生稳定的端到端收益。
+### Cache behavior
 
-## 8. 核心观测指标
+记录：
 
-实验同时从 cache、计算、数据移动和服务性能四个层面记录指标。
+- GPU cache hit volume；
+- GPU eviction volume；
+- CPU cache hit volume；
+- full-hit / partial-hit status by state group when available。
 
-### 8.1 Cache reuse
+优先使用 token/state volume，而不是只报告 request-level hit count。
 
-记录 GPU cache hit 与 CPU cache hit。
+### Computation
 
-GPU cache hit 用于确认两种配置在相同 GPU budget 下的基础复用行为。CPU cache hit 用于量化 hierarchical cache 额外保留下来的可复用状态。
+记录 GPU miss 导致的 recomputation，并比较 hierarchical 相对 GPU-only 避免的 recomputation。
 
-### 8.2 Recomputation
+### Data movement
 
-记录因 cache miss 导致的 recomputation。
+记录 CPU-GPU restore volume、transfer activity，以及能够测量时的 non-overlapped restore stall。
 
-重点比较 hierarchical cache 是否通过 CPU-resident reuse 稳定减少 GPU-only 配置中的重复计算。
+Raw transfer duration 不与 computation time 直接相加。
 
-### 8.3 CPU-GPU traffic
+### Serving performance
 
-记录 hierarchical cache 引入的 CPU-GPU 数据移动。
+记录：
 
-该指标用于衡量减少 recomputation 所付出的额外 transfer cost，并与最终 TTFT 和 throughput 一起分析。
+- TTFT distribution；
+- steady-state throughput；
+- active-request preemption count；
+- achieved request rate。
 
-### 8.4 TTFT
-
-记录请求的 TTFT 分布。
-
-TTFT 用于判断 cache reuse 是否真正降低请求在生成首 token 之前的等待成本，而不是只改善内部 cache statistics。
-
-### 8.5 Throughput
-
-记录稳定阶段的系统 throughput。
-
-Throughput 用于判断 hierarchy 在整体 serving 层面是否提升有效处理能力。
-
-## 9. 实验执行方式
+## 11. 实验执行方式
 
 每个配置进行多次独立重复测量。
 
-每轮正式实验前恢复到规定的 cold-cache 或 warm-cache 初始状态，避免上一轮运行污染下一轮结果。
+每轮实验重新建立规定的 cold/warm 初始状态。GPU-only 与 hierarchical 使用相同 workload trace。
 
-各配置使用相同 workload trace、相同请求数量和相同实验结束条件。
+两种 architecture 的执行顺序交替或随机化，避免机器长期状态变化系统性偏向某一配置。
 
-正式测量前执行必要的非计时初始化，使模型加载、首次内存分配和首次执行开销不进入结果。
+正式测量前完成模型加载、首次分配和必要 runtime initialization。每次 run 保存 model revision、runtime commit、hardware、precision、cache/offload policy、GPU/CPU cache budget、workload identifier、initial state、repetition index 和 validity status。
 
-正式结果同时报告中心趋势与运行间波动，不依赖单次运行结果。
+## 12. 结果组织
 
-每次 run 记录完整 metadata，包括模型、硬件、runtime、cache policy、GPU cache budget、workload 配置、initial state 与 repetition index。
+实验至少形成：
 
-## 10. 结果组织
+1. cold-cache 下 GPU-only vs hierarchical 的 GPU/CPU hit、eviction 与 recomputation；
+2. warm-cache 下相同对比；
+3. CPU-GPU restore traffic 与 non-overlapped stall；
+4. cold-cache TTFT / throughput；
+5. warm-cache TTFT / throughput；
+6. cold-cache 运行过程中 reuse benefit 随请求进程的变化。
 
-实验最终至少形成以下结果：
+结果分析必须保持以下证据链：
 
-1. GPU-only 与 hierarchical cache 的 GPU/CPU cache hit 对比；
-2. GPU-only 与 hierarchical cache 的 recomputation 对比；
-3. hierarchical cache 引入的 CPU-GPU traffic；
-4. cold-cache 下两种 cache architecture 的 TTFT 与 throughput；
-5. warm-cache 下两种 cache architecture 的 TTFT 与 throughput；
-6. cold-cache 运行过程中 cache reuse 与性能收益随请求进程的变化。
+```text
+GPU eviction of reusable state
+        ↓
+validated CPU-tier hit
+        ↓
+avoided recomputation
+        ↓
+restore traffic / stall
+        ↓
+TTFT / throughput change
+```
 
-结果分析必须将 cache reuse、recomputation reduction、transfer cost 与端到端性能放在同一证据链中解释。
+## 13. 结果判断逻辑
 
-## 11. 结果判断逻辑
+### 情况 A：Hierarchy 产生明确正收益
 
-### 情况 A：Hierarchical cache 产生明确正收益
+CPU hit 稳定存在，recomputation 明显下降，并最终改善 TTFT 或 throughput。该结果说明当前 workload 下存在 hierarchical caching 的基础系统价值。
 
-如果 hierarchical cache 获得稳定 CPU cache hit，同时显著减少 recomputation，并最终改善 TTFT 或 throughput，则说明现代 hybrid 模型在当前 workload 下仍然存在 hierarchical context caching 的基础价值。
+### 情况 B：Reuse 存在，但 restore cost 抵消收益
 
-### 情况 B：Reuse 存在，但 transfer cost 抵消收益
+CPU hit 和 recomputation reduction 明显存在，但端到端性能没有改善。该结果说明额外容量有复用价值，但当前 data movement cost 抵消了计算节省。
 
-如果 CPU cache hit 与 recomputation reduction 明显存在，但 TTFT 和 throughput 没有改善，则说明 hierarchy 在语义上具有复用价值，但 CPU-GPU transfer cost 已经抵消计算节省。
+### 情况 C：CPU tier 基本没有被利用
 
-### 情况 C：额外 CPU tier 基本没有被利用
+GPU eviction 后很少出现 CPU hit，hierarchical 与 GPU-only 的 recomputation 和性能接近。该结果说明当前代表性 workload 缺乏足够的可复用 working set，不能据此归因于 restore 太慢。
 
-如果 CPU cache hit 很低，hierarchical 与 GPU-only 的 recomputation 和端到端性能接近，则说明当前 workload 的主要 working set 已经被 GPU cache 覆盖，额外 CPU hierarchy 缺乏基础收益空间。
+### 情况 D：Cold 与 Warm 结论不同
 
-### 情况 D：Cold-cache 与 warm-cache 结论不同
+Warm-cache 明显受益而 cold-cache 收益有限，说明 hierarchy 的价值依赖历史状态积累和长期 revisit。若 warm-cache 仍无收益，则 Experiments 2 和 3 分别定位是 capacity pressure 不足、reuse 不足还是 transfer/stall 过高。
 
-如果 cold-cache 收益有限而 warm-cache 收益明显，则说明 hierarchy 的价值依赖历史状态积累和长期 reuse，而不是单次请求路径本身。
+## 14. 实验边界
 
-如果 warm-cache 仍然没有收益，则后续 GPU cache pressure 与 prefix reuse sweep 需要判断是 workload reuse 不足、GPU cache 已足够，还是 transfer cost 过高。
+本实验只系统比较 cache architecture 和 initial state。
 
-## 12. 实验边界
-
-本实验只比较 cache architecture 与 cache initial state。
-
-GPU cache pressure 不在本实验中系统 sweep。Prefix reuse ratio 不在本实验中系统 sweep。模型架构差异也不在本实验中做因果归因。
-
-这些变量将在后续实验中独立控制，以判断 hierarchical cache 的收益边界及其跨模型稳定性。
+GPU cache pressure 不做 sweep。Prefix reuse 不做 sweep。Cache locality、request ordering、scheduler strategy 和 hardware 均保持固定。
