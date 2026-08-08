@@ -35,6 +35,7 @@ Detailed designs currently available:
 - [Modern KV / state bottleneck profiling](experiments/modern-kv-state-bottleneck/)
 - [Hierarchical cache value evaluation](experiments/hierarchical-cache-value/)
 - [Page granularity and GPU-assisted I/O](experiments/page-granularity-gpu-assisted-io/)
+- [Cache locality and scheduler behavior](experiments/cache-locality-scheduler-behavior/)
 
 ## Model and hardware baseline
 
@@ -75,10 +76,11 @@ See [docs/REPOSITORY_RULES.md](docs/REPOSITORY_RULES.md).
 
 Work in progress.
 
-Detailed experiment designs are currently specified for the first three groups:
+Detailed experiment designs are currently specified for the first four groups:
 
 - Modern KV / State Bottleneck Profiling;
 - Hierarchical Cache Value Evaluation;
-- Page Granularity and GPU-Assisted I/O.
+- Page Granularity and GPU-Assisted I/O;
+- Cache Locality and Scheduler Behavior.
 
-Implementation, pinned-runtime validation, and measured results will be added incrementally. Cache Locality and Scheduler Behavior, End-to-End Serving, and Model/Hardware Generalization are still represented at the project-plan level and should receive experiment-specific designs before implementation begins.
+Implementation, pinned-runtime validation, and measured results will be added incrementally. End-to-End Serving and Model/Hardware Generalization are still represented at the project-plan level and should receive experiment-specific designs before implementation begins.
