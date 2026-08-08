@@ -12,11 +12,11 @@ Primary checkpoint family: `Qwen/Qwen3.5-9B`.
 
 The official model card reports:
 
-- 9B parameters；
-- 32 language-model layers；
-- hidden layout `8 × (3 × Gated DeltaNet + 1 × Gated Attention)`；
-- native context length 262,144 tokens；
-- separately supported extension up to 1,010,000 tokens。
+- 9B parameters;
+- 32 language-model layers;
+- hidden layout `8 × (3 × Gated DeltaNet + 1 × Gated Attention)`;
+- native context length 262,144 tokens;
+- separately supported extension up to 1,010,000 tokens.
 
 The checkpoint config identifies the repeating layer types as `linear_attention` and `full_attention`.
 
@@ -30,12 +30,12 @@ Primary serving checkpoint: `google/gemma-4-12B-it`. Corresponding base family: 
 
 The official model card reports:
 
-- 11.95B parameters；
-- 48 layers；
-- 1,024-token local sliding window；
-- 256K context length；
-- hybrid attention interleaving local sliding-window attention and full global attention；
-- unified Keys and Values in global layers。
+- 11.95B parameters;
+- 48 layers;
+- 1,024-token local sliding window;
+- 256K context length;
+- hybrid attention interleaving local sliding-window attention and full global attention;
+- unified Keys and Values in global layers.
 
 The cache/state layout must therefore not be assumed to match a conventional uniform dense-attention K/V pair.
 
@@ -61,37 +61,41 @@ Every I/O-sensitive run records the actual GPU form factor, PCIe/host topology, 
 
 The inspected A100 node reports:
 
-- NVIDIA driver `525.60.13`；
-- `nvidia-smi` CUDA compatibility `12.0`；
-- Docker deployment is not allowed。
+- NVIDIA driver `525.60.13`;
+- `nvidia-smi` reports `CUDA Version: 12.0`;
+- Docker deployment is not allowed.
 
 These are project-environment facts and must not be generalized to other clusters.
 
+The `CUDA Version` field printed by `nvidia-smi` must not be interpreted as the locally installed CUDA toolkit version or as a categorical statement that newer CUDA 12.x user-space binaries cannot run. NVIDIA's CUDA minor-version compatibility policy lists Linux driver `525.60.13` as the minimum driver for the CUDA 12.x family. However, minor-version compatibility is conditional. PTX JIT paths and features that require newer driver support can still fail, and a package may contain native extensions with stricter requirements.
+
+Therefore this project treats driver `525.60.13` as meeting the baseline CUDA 12.x minor-compatibility floor, not as proof that CUDA 12.8/12.9 packages or kernels are executable. Every candidate runtime still has to pass native-extension loading, model execution, and mechanism-specific validation on the actual node.
+
 ### 3.1 SGLang packaging status
 
-SGLang v0.5.11 moved the default CUDA stack to CUDA 13.0 across SGLang, `sgl-kernel`, and default images. The upstream migration tracker explicitly states that CUDA 12.9 images/kernels remain maintained as a non-default path.
+SGLang v0.5.11 moved the default CUDA stack to CUDA 13.0 across SGLang, `sgl-kernel`, and default images. The upstream migration tracker states that a CUDA 12.9 path remains maintained as a non-default compatibility path.
 
 Therefore:
 
-- default CUDA-13 SGLang packages/images are not an acceptable execution path on the current A100 node；
-- a non-Docker CUDA-12-compatible installation must be selected and pinned；
-- the existence of a maintained CUDA-12.9 path does not prove that the project node, selected model, HiCache backend, or target kernels work correctly。
+- default CUDA-13 SGLang packages/images are not the project execution path on the current node;
+- a non-Docker CUDA-12.x-compatible installation must be selected and pinned;
+- the node meeting NVIDIA's CUDA 12.x minor-compatibility floor does not prove that SGLang's CUDA 12.9 build, selected model, HiCache backend, PTX/native kernels, or target attention backend work correctly.
 
 Before SGLang contributes measured results, validation must cover import, native-kernel loading, server launch, target model execution, hierarchical-cache behavior, and any direct/kernel I/O path used by the experiment.
 
 ### 3.2 vLLM packaging status
 
-The project previously attempted `vLLM 0.26.0` from the stable/default package path on this node and observed a native-extension dependency on `libcudart.so.13`. This is consistent with vLLM 0.26.0 documentation, which states that the stable 0.26.0 release ships CUDA-13-compatible binaries by default.
+The project previously attempted `vLLM 0.26.0` from the stable/default package path on this node and observed a native-extension dependency on `libcudart.so.13`. This is retained as a **cluster-specific failed baseline**.
 
-This observation must be kept as a **cluster-specific failed baseline**, not generalized into “vLLM has no CUDA-12 path”.
-
-Current vLLM main-branch installation documentation again exposes CUDA 12.9 as a prebuilt/default development path and lists CUDA 12.8/13.0 variants. Because packaging policy has changed across releases, the project must pin an exact vLLM release/commit and wheel/build source rather than infer compatibility from the package name.
+The v0.26.0 release line uses CUDA 13.0 as its default binary target. Current vLLM main-branch installation documentation has since changed again and exposes CUDA 12.9 as the default precompiled development path, with CUDA 12.8 and CUDA 13.0 variants also documented. Packaging policy is therefore release-dependent and must not be inferred from the package name alone.
 
 For this project:
 
-- vLLM 0.26.0 default stable wheel is not a validated runtime on the current node；
-- an explicitly selected CUDA-12-compatible wheel/source build remains a candidate；
-- that candidate contributes no experimental result until native extensions, model execution, cache behavior, and required connectors pass validation。
+- the previously tested vLLM 0.26.0 default CUDA-13 binary path is not a validated runtime on the current node;
+- an explicitly selected CUDA-12.x-compatible wheel or source build remains a candidate;
+- driver `525.60.13` meeting the CUDA 12.x minor-compatibility floor is necessary context but not sufficient runtime validation;
+- the exact vLLM release/commit, wheel/build source, CUDA target, and native-extension status must be pinned;
+- a candidate contributes no experimental result until model execution, cache/state behavior, and required connector or scheduler mechanisms pass validation.
 
 ## 4. Runtime roles
 
@@ -105,15 +109,15 @@ Current vLLM cache configuration exposes hybrid/Mamba-style cache controls, incl
 
 `prefix_match_unit` is the finest token boundary at which prefix-cache hashes/hits can land. Current documentation explicitly allows it to be finer than physical KV cache blocks when divisibility requirements hold. It controls matching granularity, not how often states are stored.
 
-The current `OffloadingConnector` extends prefix caching into pinned CPU memory. Completed GPU blocks can be copied into host memory and promoted back on demand; GPU↔CPU transfers use asynchronous DMA (`cudaMemcpyAsync`).
+The current `OffloadingConnector` extends prefix caching into pinned CPU memory and can also participate in configurations with an additional secondary tier. Only the CPU primary tier has direct GPU access in that design. Completed GPU blocks can be copied into host memory and promoted back on demand; GPU↔CPU transfers use asynchronous DMA (`cudaMemcpyAsync`).
 
 Therefore a vLLM experiment must keep distinct:
 
-- prefix-match granularity；
-- physical attention block size；
-- recurrent/Mamba-style cache block or checkpoint granularity；
-- offload/transfer behavior；
-- observed actual transfer size。
+- prefix-match granularity;
+- physical attention block size;
+- recurrent/Mamba-style cache block or checkpoint granularity;
+- offload/transfer behavior;
+- observed actual transfer size.
 
 A generic `page size` label is not sufficient when these differ.
 
@@ -123,14 +127,14 @@ SGLang HiCache remains the preferred mechanism candidate for the Page Granularit
 
 Current upstream server arguments expose, among others:
 
-- `--enable-hierarchical-cache`；
-- `--page-size`；
-- `--hicache-io-backend` with `direct` and `kernel` GPU paths；
-- `--hicache-mem-layout`；
-- `--hicache-write-policy`；
-- host-cache size/ratio controls。
+- `--enable-hierarchical-cache`;
+- `--page-size`;
+- `--hicache-io-backend` with `direct` and `kernel` GPU paths;
+- `--hicache-mem-layout`;
+- `--hicache-write-policy`;
+- host-cache size/ratio controls.
 
-The HiCache design documentation describes `direct` as standard CUDA copy and `kernel` as GPU-assisted I/O.
+The current HiCache design documentation describes `direct` as standard CUDA-copy I/O and `kernel` as GPU-assisted I/O.
 
 Defaults and supported option sets have changed across SGLang revisions. The project therefore pins resolved values explicitly and does not rely on current/default documentation alone.
 
@@ -148,7 +152,7 @@ Strata §4.3 defines three stages:
 
 The paper uses a 100-token delay-hit threshold and a load/compute threshold of 100 in its own testbed. These are **historical implementation parameters**, not universal values. This project must calibrate or explicitly justify any threshold used on modern models/hardware.
 
-Current upstream SGLang/vLLM scheduler behavior must not be assumed semantically identical to these three Strata stages. Experiment 2 requires explicit mechanism-equivalence validation or a project implementation with independently controlled switches.
+Current upstream SGLang/vLLM scheduler behavior must not be assumed semantically identical to these three Strata stages. Scheduler attribution requires explicit mechanism-equivalence validation or a project implementation with independently controlled switches.
 
 ## 6. Mandatory runtime validation gates
 
@@ -170,8 +174,8 @@ If required state or native runtime behavior cannot be verified, the affected re
 
 Validation must cover both:
 
-- full-attention KV；
-- Gated DeltaNet recurrent/state-cache data。
+- full-attention KV;
+- Gated DeltaNet recurrent/state-cache data.
 
 Restoring only attention KV is a partial hierarchy, not a full Qwen3.5 hierarchical-cache result.
 
@@ -207,17 +211,17 @@ For page-granularity experiments:
 
 `KV/state` is an umbrella term.
 
-- `attention KV`: state retained by attention layers；
-- `local/sliding-window KV`: bounded state retained by local attention；
-- `recurrent state`: state retained by linear-attention or recurrent layers such as Qwen3.5 Gated DeltaNet；
-- `configured page size`: runtime tokens/page control when such a unified control exists；
-- `prefix-match granularity`: finest boundary at which prefix reuse can be recognized；
-- `physical cache block size`: runtime storage/allocation unit；
-- `offload / transfer granularity`: unit submitted to host-transfer path；
-- `actual transfer size`: payload observed after batching/coalescing/kernel processing；
-- `cache resolve time`: interval from an unresolved miss being accepted until matching context becomes safely reusable；
-- `full hierarchical hit`: every state group needed to skip the corresponding prefix computation is restored；
-- `partial hierarchical hit`: only a subset is restored。
+- `attention KV`: state retained by attention layers;
+- `local/sliding-window KV`: bounded state retained by local attention;
+- `recurrent state`: state retained by linear-attention or recurrent layers such as Qwen3.5 Gated DeltaNet;
+- `configured page size`: runtime tokens/page control when such a unified control exists;
+- `prefix-match granularity`: finest boundary at which prefix reuse can be recognized;
+- `physical cache block size`: runtime storage/allocation unit;
+- `offload / transfer granularity`: unit submitted to host-transfer path;
+- `actual transfer size`: payload observed after batching/coalescing/kernel processing;
+- `cache resolve time`: interval from an unresolved miss being accepted until matching context becomes safely reusable;
+- `full hierarchical hit`: every state group needed to skip the corresponding prefix computation is restored;
+- `partial hierarchical hit`: only a subset is restored.
 
 State groups and distinct granularity controls are reported separately whenever the runtime exposes them.
 
@@ -233,7 +237,7 @@ CPU offloading is not beneficial merely because it produces hits. A valid system
 
 GPU-assisted I/O is not beneficial merely because bandwidth rises. GPU compute interference and end-to-end serving performance must be included.
 
-A runtime feature documented upstream but not executable under this project’s pinned cluster environment is a candidate capability, not an available experimental capability.
+A runtime feature documented upstream but not executable under this project's pinned cluster environment is a candidate capability, not an available experimental capability.
 
 ## 9. Primary references
 
@@ -261,6 +265,11 @@ A runtime feature documented upstream but not executable under this project’s 
 - Current server arguments: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/server_arguments.mdx
 - v0.5.11 CUDA-13 migration release: https://github.com/sgl-project/sglang/releases/tag/v0.5.11
 - CUDA migration tracker: https://github.com/sgl-project/sglang/issues/21498
+
+### CUDA compatibility
+
+- NVIDIA CUDA Compatibility Guide: https://docs.nvidia.com/deploy/cuda-compatibility/
+- CUDA 12.9 Release Notes, driver compatibility table: https://docs.nvidia.com/cuda/archive/12.9.0/cuda-toolkit-release-notes/index.html
 
 ### Hardware
 
