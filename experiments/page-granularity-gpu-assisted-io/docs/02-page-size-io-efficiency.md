@@ -76,6 +76,8 @@ Experiment 2 分为两个层次。
 
 使用真实 CPU-resident cache hit，保留 page size 对 actual reuse / transfer pattern 的自然影响，判断 microbenchmark 中的 I/O degradation 是否真正形成 non-overlapped serving stall。
 
+每个 Experiment 2B page-size point 额外运行同 page size 的 **GPU-resident hit control**。该 control 用于抵消 page size 本身对 attention-kernel execution 的影响。
+
 两层结果必须分开报告。
 
 ## 6. Experiment 2A: Controlled I/O fragmentation
@@ -154,9 +156,35 @@ Primary serving validation 使用 Experiment 1 的 controlled prefix-boundary wo
 
 不需要重新运行 Experiment 1 的全部 context × prefix × cache-pressure 矩阵。
 
-### 7.4 Cache residency
+### 7.4 Paired residency control
 
-正式测量必须验证目标 reusable state 位于 CPU tier，并且 request 确实触发 CPU→GPU restore。
+对于每个 page-size point 和 workload，运行两种 matched residency condition：
+
+```text
+A. GPU-resident hit control
+B. CPU-resident hit with direct restore
+```
+
+两者必须具有相同：
+
+- page size；
+- attention backend；
+- matched reusable prefix；
+- effective reused tokens；
+- request trace；
+- model compute configuration。
+
+B 必须确认实际触发 CPU→GPU restore。
+
+同一 page size 下的：
+
+```text
+CPU-resident run - GPU-resident control
+```
+
+用于估计 restore-related latency / throughput penalty。
+
+这样可以避免把 page size 对 attention kernel 本身的性能影响误判成 I/O penalty。
 
 没有实际 CPU-resident hit 的 run 不进入 serving I/O analysis。
 
@@ -188,9 +216,9 @@ Measurement window 必须只覆盖目标 restore path，并记录 overlap policy
 
 ### 8.5 Matched reference bandwidth
 
-Reference bandwidth 使用同一硬件、同一 host-memory condition、同一 direction 下的大块连续 transfer 测量。
+Reference bandwidth 使用同一 hardware、NUMA、pinned-host-memory condition 与 transfer direction 下的大块连续 HtoD transfer 测量。
 
-不得使用理论 PCIe peak 直接代替 matched runtime reference。
+该 reference 在 Experiments 2–3 的 primary bandwidth-utilization comparison 中保持一致。不得使用 theoretical PCIe peak 直接替代。
 
 ### 8.6 Bandwidth utilization
 
@@ -208,11 +236,15 @@ Serving-level validation 记录不能被 model computation overlap 隐藏的 res
 
 Raw transfer duration 与 non-overlapped stall 分开保存。
 
-### 8.9 Serving supporting metrics
+### 8.9 Matched restore penalty
 
-记录 TTFT、prefill time / throughput、overall throughput，用于判断 I/O degradation 是否进入系统 critical path。
+同一 page size 下，比较 CPU-resident direct restore 与 GPU-resident hit control 的：
 
-Experiment 2 不将这些指标解释为 GPU-assisted I/O benefit。
+- TTFT difference；
+- prefill/service-time difference；
+- throughput difference。
+
+该 matched delta 是跨 page size 分析 I/O serving cost 的主要 supporting metric。
 
 ## 9. Execution procedure
 
@@ -239,7 +271,9 @@ fixed logical bytes
 
 ### 9.2 Serving-level
 
-每个 representative page-size point 使用相同 request trace、cache budget、initial CPU residency 和 runtime controls。
+每个 representative page-size point 使用相同 request trace、cache budget 和 workload controls。
+
+先验证 GPU-resident hit control，再构造 matched CPU-resident state，并完成 direct restore run。
 
 每个 run 同时记录 reuse、HtoD restore、DtoH background traffic、stall 和 serving metrics，使机制链能够在同一次 execution 中对应。
 
@@ -265,11 +299,13 @@ fixed logical bytes
 
 在 serving-level run 中比较 restore duration 与 non-overlapped I/O stall。
 
-Bandwidth loss 只有在 non-overlapped stall 同步增加时，才进一步构成实际 serving bottleneck evidence。
+同时使用每个 page size 的 GPU-resident control 计算 matched restore penalty。
+
+只有 bandwidth loss、non-overlapped stall 和 matched residency delta 方向一致时，才把 serving degradation 主要解释为 I/O effect。
 
 ### Analysis D: Joint reuse-I/O trade-off
 
-将 Experiment 1 的 effective reuse / reuse efficiency 与 Experiment 2 的 bandwidth utilization / non-overlapped stall 放在相同 page-size operating points 上。
+将 Experiment 1 的 effective reuse / reuse efficiency 与 Experiment 2 的 bandwidth utilization / matched restore penalty 放在相同 page-size operating points 上。
 
 目标是识别：
 
@@ -289,8 +325,10 @@ Bandwidth loss 只有在 non-overlapped stall 同步增加时，才进一步构�
 6. runtime batching/coalescing behavior 已记录；
 7. bandwidth reference 使用匹配的 host-memory condition；
 8. serving run 确实触发目标 CPU-resident restore；
-9. raw transfer duration 与 non-overlapped stall 不互相替代；
-10. invalid / unsupported runs 保留 reason。
+9. 每个 serving page-size point 有 matched GPU-resident hit control；
+10. GPU- and CPU-resident paired runs 的 effective reuse 可比；
+11. raw transfer duration 与 non-overlapped stall 不互相替代；
+12. invalid / unsupported runs 保留 reason。
 
 ## 12. Interpretation boundaries
 
@@ -298,14 +336,16 @@ Bandwidth loss 只有在 non-overlapped stall 同步增加时，才进一步构�
 
 本实验不能仅凭 configured page size 宣称 fragmentation 已发生。
 
+跨 page size 的 TTFT / throughput 变化不能全部归因于 I/O，因为 page size 也可能改变 attention-kernel efficiency。正式 I/O interpretation 以同 page-size GPU-resident control 为基准。
+
 本实验不能证明 `kernel` GPU-assisted I/O 能够修复该问题，因为该 backend 尚未作为比较变量引入。
 
-如果小 page 提高 reuse 但 actual transfer 已被 runtime 自动聚合、bandwidth 没有显著下降，则应该得出“现代 runtime 已缓解原始 fragmentation mechanism”的结论，而不是强行复现 Strata 的历史结果。
+如果小 page 提高 reuse，但 actual transfer 已被 runtime 自动聚合、bandwidth 没有显著下降，则应该得出“现代 runtime 已缓解原始 fragmentation mechanism”的结论，而不是强行复现 Strata 的历史结果。
 
 ## 13. Final conclusion target
 
 Experiment 2 最终回答：
 
-> 在 Experiment 1 确认有 reuse value 的 page-size region 中，哪些 granularity 会真实造成 fragmented CPU→GPU restore、带宽利用率下降和 non-overlapped I/O stall。
+> 在 Experiment 1 确认有 reuse value 的 page-size region 中，哪些 granularity 会真实造成 fragmented CPU→GPU restore、带宽利用率下降和相对于同 page-size GPU-resident control 的额外 serving stall。
 
 这些结果直接确定 Experiment 3 需要比较 `direct` 与 `kernel` I/O 的 representative operating points。
