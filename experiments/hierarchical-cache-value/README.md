@@ -13,7 +13,7 @@
 3. **Prefix Reuse Scaling**：改变 prefix reuse 程度，判断 CPU restore 与 recomputation 的相对收益边界。
 4. **Cross-Model Validation**：在不同 hybrid attention/state 设计的模型上复验代表性配置，判断结论是否具有跨模型稳定性。
 
-当前已完成 Experiment 1、Experiment 2 与 Experiment 3 的详细实验设计。后续实验继续在同一目录下补充，不重复建立新的顶层实验目录。
+当前四个实验的详细实验设计均已完成。Experiment 4 只做代表性 cross-model validation，不重复 Experiments 1–3 的完整参数 sweep。
 
 ## Directory structure
 
@@ -23,7 +23,8 @@ hierarchical-cache-value/
 ├── docs/
 │   ├── 01-baseline-benefit.md
 │   ├── 02-gpu-cache-pressure-scaling.md
-│   └── 03-prefix-reuse-scaling.md
+│   ├── 03-prefix-reuse-scaling.md
+│   └── 04-cross-model-validation.md
 ├── code/
 │   └── README.md
 └── results/
@@ -33,6 +34,26 @@ hierarchical-cache-value/
 - `docs/`：实验设计、变量定义、判定逻辑与解释边界。
 - `code/`：workload 构造、实验运行、cache/state 观测、指标采集与结果处理代码。
 - `results/`：raw measurements、processed data、统计结果、图表与结果摘要。
+
+## Experiment logic
+
+四个实验形成以下逻辑链：
+
+```text
+Experiment 1
+Hierarchical cache 有没有基础收益？
+        ↓
+Experiment 2
+收益在什么 GPU cache pressure 下出现？
+        ↓
+Experiment 3
+收益需要什么程度的 prefix reuse？
+        ↓
+Experiment 4
+上述规律能否跨现代模型保持稳定？
+```
+
+前三个实验分别建立基础收益、cache pressure 与 reuse 的关系。第四个实验使用代表性 regime 做跨模型验证，避免重复 exhaustive sweep。
 
 ## Core metrics
 
@@ -52,5 +73,7 @@ hierarchical-cache-value/
 GPU-only 与 hierarchical cache 的比较必须保持相同模型、请求集合、请求顺序、输出条件和 GPU cache budget。Warm-cache 与 cold-cache 必须具有明确且可复现的初始状态。
 
 实验不预设 hierarchical cache 一定取得正收益。如果 CPU restore 带来的数据移动成本抵消 recomputation reduction，这本身就是本部分需要报告的结论。
+
+跨模型实验按实际 cache pressure regime 与 reuse regime 匹配，不强制两个模型使用完全相同的绝对 GPU cache 容量。模型差异只能报告为 model-dependent behavior，不能仅凭两种模型对比直接归因于 attention architecture。
 
 当前模型架构与 serving-runtime 假设沿用仓库根目录 [`docs/TECHNICAL_BASELINE.md`](../../docs/TECHNICAL_BASELINE.md)。
