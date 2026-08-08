@@ -2,327 +2,310 @@
 
 ## 1. Objective
 
-本实验定量评估 page granularity 对 CPU→GPU cache/state transfer efficiency 的影响，验证较小 page 是否会因为传输碎片化导致有效带宽下降，并确定这种 I/O degradation 从什么 page-size 区间开始显著。
+本实验定量评估 page granularity 对 CPU→GPU cache/state restore efficiency 的影响，验证较小 page 是否真实产生更细碎的 transfer behavior、降低 sustained bandwidth，并判断这种 degradation 是否进入 serving critical path。
 
-本实验只研究 `page size → I/O efficiency` 这一段因果关系，不引入 GPU-assisted I/O。GPU-assisted I/O 留到 Experiment 3 单独验证。
+本实验只研究：
 
-本实验最终需要回答：实验一得到的 reuse-efficient page-size region 是否已经开始付出明显的 I/O penalty，以及 page size 从什么范围开始进入 fragmentation-dominated region。
+```text
+page size
+    ↓
+observed transfer fragmentation
+    ↓
+I/O efficiency
+    ↓
+non-overlapped restore stall
+```
 
-## 2. Research questions
+GPU-assisted `kernel` backend 留到 Experiment 3。本实验使用固定的 standard-copy baseline。
 
-本实验回答以下问题：
+所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
 
-1. page size 减小时，单次 transfer 是否变得更加碎片化；
-2. fragmented transfer 是否导致 sustained host→GPU bandwidth 下降；
-3. bandwidth degradation 是否进一步增加 cache restore / load 的等待时间；
-4. 不同 transfer volume 和 workload 下，该趋势是否保持一致；
-5. Experiment 1 得到的 reuse-efficient page-size region 中，是否已经出现明显的 I/O penalty；
-6. page size 从什么范围开始进入明显的 fragmentation-dominated region。
+## 2. Primary backend
+
+SGLang 主路径使用：
+
+```text
+--hicache-io-backend direct
+```
+
+该 backend 作为 standard CUDA memory-copy baseline。
+
+`hicache_mem_layout`、`hicache_write_policy`、attention backend 和 overlap policy 必须显式指定并在整个 Experiment 2 中固定。不得依赖 runtime default。
+
+Host layout 必须选择一个同时能用于 Experiment 3 的 `direct` 与 `kernel` paired comparison 的配置。若某个 layout 只适用于其中一个 backend，则不能用它构造公平的 backend comparison。
 
 ## 3. Independent variable
 
-实验的主要自变量为 page size。
+主要自变量是与 Experiment 1 相同的 SGLang `page_size`。
 
-Page size 使用与 Experiment 1 相同的档位，使两组实验结果能够直接对应。所有正式结果都应保留相同的 page-size identifier，便于后续联合分析。
+只使用通过 Experiment 1 capability gate、且由同一 attention backend 支持的 page-size candidates。
 
-本实验统一使用普通 CPU→GPU I/O backend，不启用 GPU-assisted/kernel I/O。
+如果替换为把 reuse matching 与 physical/transfer granularity 解耦的 runtime，则 Experiment 2 不再沿用 Experiment 1 的 generic page-size axis。此时独立变量改为 physical / transfer granularity，并单独记录 prefix-match granularity。
 
 ## 4. Controlled variables
 
-同一组 page-size sweep 中保持以下条件不变：
+同一比较组保持以下条件固定：
 
-- model 与 model revision；
-- hardware；
-- serving runtime 与 runtime configuration；
-- precision；
-- CPU memory configuration；
-- GPU memory configuration；
-- I/O backend；
-- scheduler policy；
-- cache policy；
+- model 与 revision；
+- hardware 与 CPU-GPU topology；
+- runtime commit；
+- attention backend；
+- precision 与 cache dtype；
+- CPU pinned-memory condition；
+- GPU cache budget 与 CPU HiCache budget；
+- `hicache_io_backend=direct`；
+- `hicache_mem_layout`；
+- `hicache_write_policy`；
+- scheduler / overlap configuration；
+- hybrid/recurrent-state tracking parameters；
 - transfer direction；
-- request sequence；
+- request trace；
 - repetition protocol。
 
-除明确作为实验变量的 transfer volume、access pattern 和 page size 外，不允许同时改变其他可能影响 I/O efficiency 的因素。
+Controlled I/O 子实验另外固定 logical transfer bytes 与 access pattern。
 
 ## 5. Experimental structure
 
 Experiment 2 分为两个层次。
 
-第一层采用 Controlled I/O experiment，固定逻辑总传输数据量，只改变 page granularity，用于建立 page fragmentation 与 bandwidth efficiency 之间的直接因果关系。
+### Experiment 2A: Controlled I/O fragmentation
 
-第二层采用 Serving-level validation，在实际 cache reuse workload 中验证 Controlled I/O experiment 观察到的 fragmentation effect 是否足以影响 serving critical path。
+固定 logical data movement，只改变 page granularity，直接验证 fragmentation 对 I/O efficiency 的影响。
 
-两层实验分别回答机制是否存在，以及该机制是否具有实际系统影响。
+### Experiment 2B: Serving-level validation
 
-## 6. Experiment 2A: Controlled I/O Efficiency
+使用真实 CPU-resident cache hit，保留 page size 对 actual reuse / transfer pattern 的自然影响，判断 microbenchmark 中的 I/O degradation 是否真正形成 non-overlapped serving stall。
+
+两层结果必须分开报告。
+
+## 6. Experiment 2A: Controlled I/O fragmentation
 
 ### 6.1 Purpose
 
-Controlled I/O experiment 固定总传输数据量，只改变数据被划分成多少个 page。
+Controlled I/O experiment 需要最大限度隔离：
 
-在同一比较组中，总数据量、transfer direction、hardware 和 I/O backend 保持一致。page size 是主要变化因素，因此 observed bandwidth difference 可以主要归因于 transfer granularity 与 fragmentation。
+```text
+same logical bytes
++ same host layout
++ same backend
++ same direction
++ different page size / page count
+```
+
+这样 observed bandwidth difference 才能主要归因于 page/operation granularity，而不是总数据量变化。
 
 ### 6.2 Transfer volume
 
-实验设置多个代表性的总 transfer volume，至少覆盖 small、medium 和 large transfer 三个区间。
+设置 small、medium、large 三个代表性的 logical transfer volume。
 
-每个 transfer volume 都执行完整的 page-size sweep。
+具体字节数由目标 model 的实际 cache/state footprint 与可稳定测量范围确定。每一个 transfer-volume group 内，不同 page size 的 logical payload bytes 必须一致。
 
-该设计用于判断 fragmentation penalty 是在不同 transfer scale 下普遍存在，还是只在大规模 cache restoration 时显著。
+Medium / large transfer 是主要结果。Small transfer 主要用于确认 fixed overhead 区域。
 
-具体 transfer-volume 档位在实现阶段根据模型实际 cache/state footprint 与 runtime 可支持范围确定，并在所有 page-size 配置中保持逻辑总传输字节数一致。
+### 6.3 Access patterns
 
-### 6.3 Access pattern
+至少包含两种模式。
 
-Controlled I/O experiment 至少包含两类 access pattern。
+#### A. Contiguous page range
 
-#### A. Contiguous transfer
+恢复一段连续逻辑 page range。
 
-需要传输的 cache/state 在逻辑上连续。
-
-该组作为相对理想的传输基线，用于测量在访问连续的情况下，page granularity 本身对 I/O efficiency 的影响。
+该组用于建立相对理想的 transfer baseline，并观察即使逻辑访问连续，细 page 是否因 operation granularity 产生额外 overhead。
 
 #### B. Fragmented page selection
 
-需要传输的数据由多个离散 page 组成，但同一比较组的逻辑总传输数据量保持一致。
+恢复离散 page 集合，同时保持 logical payload bytes 与 contiguous group 可比。
 
-该组用于模拟 cache reuse 场景中只恢复部分有效 page 的实际访问形态，并观察小 page 与离散访问叠加后的额外 fragmentation cost。
+该组模拟 prefix/cache reuse 中实际需要加载的非连续 state，并用于放大真实 fragmentation behavior。
 
-两类 access pattern 的结果分开报告，不将 contiguous 与 fragmented selection 混合为单一 bandwidth 数值。
+### 6.4 Read-path isolation
 
-## 7. Experiment 2B: Serving-Level Validation
+Experiment 2A 主要研究 CPU→GPU restore。
+
+正式 measurement window 前先准备好 CPU-resident state。GPU→CPU backup/write-back traffic 不得混入 read bandwidth measurement。
+
+如果 runtime 无法完全停止后台 write traffic，则必须独立采集 HtoD 与 DtoH bytes / events，并从 restore analysis 中区分。
+
+## 7. Experiment 2B: Serving-level validation
 
 ### 7.1 Purpose
 
-Serving-level validation 在真实 cache reuse workload 中验证 Controlled I/O experiment 发现的 fragmentation effect 是否足以影响 serving。
+Serving-level validation 检查：
 
-该阶段保留 page size 对实际 cache behavior、transfer volume 和 restore pattern 的自然影响，因此不要求不同 page-size 配置具有完全相同的实际传输数据量。
+> Controlled I/O 中观察到的 bandwidth degradation 是否足以增加实际 cache restore stall，并影响用户可见 serving performance。
 
-该阶段回答的是：在实际系统中，小 page 带来的 cache reuse 收益是否同时伴随着可观测且具有实际影响的 I/O penalty。
+该阶段不要求不同 page size 的 actual transferred bytes 相同，因为 page size 对 effective reuse 本身的影响就是真实系统行为的一部分。
 
-### 7.2 Workload selection
+### 7.2 Page-size points
 
-Serving-level validation 不重复 Experiment 1 的全部 workload sweep。
+从 Experiment 1 的同一 primary workload 中选择三个 page-size regions：
 
-从 Experiment 1 的结果中选择三个代表性 operating points。
+1. **coarse / reuse-limited point**；
+2. **transition point**；
+3. **reuse-saturated fine-page point**。
 
-#### Point A: Low reuse benefit
+这三个点由 Experiment 1 processed results 预先确定，而不是根据 Experiment 2 的 bandwidth 结果重新挑选。
 
-该点选择小 page 对 effective reuse 提升较小的 workload。
+### 7.3 Workloads
 
-该点用于建立负收益边界。如果 page size 缩小已经明显降低 I/O efficiency，而 reuse benefit 很小，则该区域不具有实际系统价值。
+Primary serving validation 使用 Experiment 1 的 controlled prefix-boundary workload，以保持因果链清晰。
 
-#### Point B: Intermediate trade-off
+随后增加一个 mixed-reuse workload 作为 robustness check。
 
-该点选择 page size 缩小时 effective reuse 明显增加，但收益尚未完全饱和的 workload。
+不需要重新运行 Experiment 1 的全部 context × prefix × cache-pressure 矩阵。
 
-该点作为主要 trade-off operating point，用于观察 reuse benefit 与 I/O penalty 是否同时出现。
+### 7.4 Cache residency
 
-#### Point C: High reuse / saturation
+正式测量必须验证目标 reusable state 位于 CPU tier，并且 request 确实触发 CPU→GPU restore。
 
-该点选择小 page 已接近 Experiment 1 最大 reuse benefit 的 workload。
+没有实际 CPU-resident hit 的 run 不进入 serving I/O analysis。
 
-该点用于判断继续缩小 page 是否主要增加 I/O cost，而不再产生明显额外 reuse benefit。
+## 8. Core metrics
 
-三个 operating points 的选择必须直接依据 Experiment 1 的 processed results，不通过主观指定与结果无关的 workload。
+### 8.1 Actual HtoD payload bytes
 
-## 8. Cache-state control
+记录目标 restore 的实际 CPU→GPU payload bytes。
 
-每次正式 serving measurement 前将 cache 初始化到规定状态。
+这是 bandwidth denominator 的基础，同时用于确认不同 controlled configurations 的 logical bytes 是否匹配。
 
-同一 workload 的所有 page-size 配置使用相同的 request sequence、prefix structure、cache capacity 和 initial residency condition。
+### 8.2 Transfer / operation count
 
-实验必须确认正式测量期间实际发生目标 CPU→GPU cache/state transfer。
+记录完成一次 logical restore 所需的 copy operations、I/O batches、kernel/copy launches 或 runtime 可观测的等价事件数量。
 
-没有产生目标 transfer 的 run 不进入 I/O efficiency 分析，也不能将“未发生 I/O”解释为较高的 I/O efficiency。
+### 8.3 Observed transfer-size distribution
 
-## 9. Core metrics
+记录实际操作粒度，而不是直接把 configured page size 当作 transfer size。
 
-### 9.1 Sustained host→GPU bandwidth
+如果 runtime 自动 coalesce / batch 多个 page，正式结论必须基于 observed behavior。
 
-Sustained host→GPU bandwidth 是 Experiment 2 的主要性能指标。
-
-该指标使用正式测量窗口内实际 CPU→GPU 数据量与对应 transfer duration 计算，并分别报告 Controlled I/O experiment 与 Serving-level validation 的结果。
-
-主要观察关系为：
+### 8.4 Sustained host→GPU bandwidth
 
 ```text
-page size ↓ → sustained host→GPU bandwidth ?
+sustained bandwidth = target HtoD payload bytes / target transfer interval
 ```
 
-### 9.2 Bandwidth utilization
+Measurement window 必须只覆盖目标 restore path，并记录 overlap policy。
 
-Bandwidth utilization 将 observed sustained bandwidth 与同一 hardware、同一 backend 下的大块连续传输 reference bandwidth 进行比较。
+### 8.5 Matched reference bandwidth
+
+Reference bandwidth 使用同一硬件、同一 host-memory condition、同一 direction 下的大块连续 transfer 测量。
+
+不得使用理论 PCIe peak 直接代替 matched runtime reference。
+
+### 8.6 Bandwidth utilization
 
 ```text
-bandwidth utilization = observed sustained bandwidth / reference bandwidth
+bandwidth utilization = sustained bandwidth / matched reference bandwidth
 ```
 
-Reference bandwidth 的测量方法在整个实验中保持一致。
+### 8.7 Restore duration
 
-该指标用于比较不同 page granularity 对硬件可用传输能力的利用程度。
+记录完成目标 cache/state restore 的实际持续时间。
 
-### 9.3 Transfer count
+### 8.8 Non-overlapped I/O stall
 
-实验记录完成一次逻辑 cache/state restoration 所需要的实际 transfer/page operation 数量。
+Serving-level validation 记录不能被 model computation overlap 隐藏的 restore stall。
 
-该指标用于验证 page size 缩小是否真实转化为更多 transfer operation，而不是仅在逻辑页面表示上发生变化。
+Raw transfer duration 与 non-overlapped stall 分开保存。
 
-### 9.4 Transfer-size distribution
+### 8.9 Serving supporting metrics
 
-实验记录实际 transfer size 的分布，而不是仅依据 configured page size 推断 I/O granularity。
+记录 TTFT、prefill time / throughput、overall throughput，用于判断 I/O degradation 是否进入系统 critical path。
 
-该指标用于识别 runtime 是否自动执行 page merging、coalescing 或 batching。
+Experiment 2 不将这些指标解释为 GPU-assisted I/O benefit。
 
-如果 runtime 已经将多个小 page 聚合为较大的实际 transfer，则正式结论必须基于 observed transfer granularity，而不能仅依据 configured page size 宣称存在 fragmented I/O。
+## 9. Execution procedure
 
-### 9.5 I/O duration
+### 9.1 Controlled I/O
 
-实验记录一次 cache/state restoration 的实际 I/O duration。
-
-该指标用于验证 sustained bandwidth degradation 是否进一步转化为更长的 restore latency。
-
-### 9.6 Non-overlapped I/O stall
-
-Serving-level validation 进一步记录无法被 computation overlap 隐藏的 I/O stall。
-
-该指标用于判断 bandwidth degradation 是否真正进入 serving critical path。
-
-较低 bandwidth 如果完全能够被 computation overlap，则不能仅凭 microbenchmark bandwidth loss 声称 serving performance 已受到实际影响。
-
-## 10. Execution procedure
-
-Controlled I/O experiment 对每一个 transfer-volume 与 access-pattern 组合执行完整 page-size sweep。
-
-每个配置先完成统一 warm-up，再进入正式 measurement window。每个配置重复运行多次，并记录 repetition index。
-
-Controlled I/O 的基本实验单元定义为：
+基本实验单元为：
 
 ```text
-fixed total logical bytes × fixed access pattern × page-size sweep
+fixed logical bytes
+× fixed access pattern
+× fixed direct backend
+× page-size sweep
 ```
 
-Serving-level validation 对每一个 representative operating point 使用与 Experiment 1 一致的 request sequence 和 workload parameters，再执行完整 page-size sweep。
+每个配置：
 
-每个 run 同时记录 cache behavior、actual transfer behavior 与 I/O stall，使 page size、reuse 和 I/O 的关系能够在同一次 serving execution 中对应起来。
+1. 初始化 host/device buffers 与 cache metadata；
+2. 完成 warm-up；
+3. 验证目标 bytes 和 page indices；
+4. 执行正式 transfer measurement；
+5. 重复多次；
+6. 随机化或平衡 page-size execution order；
+7. 保留 raw trace 和 invalid reason。
 
-不同 page-size 配置的运行顺序不应固定为单向递增或递减。正式实现应避免长期系统状态、温度或共享资源变化与 page-size 顺序系统性相关。
+### 9.2 Serving-level
 
-## 11. Result organization
+每个 representative page-size point 使用相同 request trace、cache budget、initial CPU residency 和 runtime controls。
 
-Controlled I/O results 与 Serving-level results 分开保存和汇总。
+每个 run 同时记录 reuse、HtoD restore、DtoH background traffic、stall 和 serving metrics，使机制链能够在同一次 execution 中对应。
 
-每条 raw measurement 至少记录：
+## 10. Primary analyses
 
-- experiment type；
-- page size；
-- logical transfer volume；
-- actual transferred bytes；
-- access pattern；
-- transfer count；
-- transfer-size statistics；
-- transfer duration；
-- sustained bandwidth；
-- bandwidth utilization；
-- workload identifier；
-- cache-state validity；
-- repetition index；
-- runtime 与 hardware metadata。
+### Analysis A: Page size → observed fragmentation
 
-Serving-level run 额外记录 Experiment 1 中对应的 reuse metrics 与 non-overlapped I/O stall。
+联合分析：
 
-## 12. Primary analyses
+- configured page size；
+- operation count；
+- observed transfer-size distribution。
 
-### Analysis A: Page size vs. sustained bandwidth
+只有 observed I/O behavior 随 page size 变细而真实变碎，才能认为 fragmentation mechanism 成立。
 
-绘制 page size 与 sustained host→GPU bandwidth 的关系。
+### Analysis B: Fragmentation → bandwidth
 
-该分析用于判断小 page 是否导致 host→GPU bandwidth 系统性下降，以及下降从什么粒度开始明显出现。
+绘制 observed transfer granularity / operation count 与 sustained bandwidth、bandwidth utilization 的关系。
 
-### Analysis B: Page size vs. bandwidth utilization
+该图比简单 `page size → bandwidth` 更直接支持机制解释。
 
-绘制 page size 与 bandwidth utilization 的关系。
+### Analysis C: Page size → restore stall
 
-该分析用于判断不同 page granularity 距离同一硬件和 backend 的 reference bandwidth 有多远。
+在 serving-level run 中比较 restore duration 与 non-overlapped I/O stall。
 
-### Analysis C: Fragmentation mechanism
+Bandwidth loss 只有在 non-overlapped stall 同步增加时，才进一步构成实际 serving bottleneck evidence。
 
-联合分析 page size、transfer count、transfer-size distribution 与 sustained bandwidth。
+### Analysis D: Joint reuse-I/O trade-off
 
-目标机制链为：
+将 Experiment 1 的 effective reuse / reuse efficiency 与 Experiment 2 的 bandwidth utilization / non-overlapped stall 放在相同 page-size operating points 上。
 
-```text
-page size ↓
-    ↓
-actual transfer fragmentation ↑
-    ↓
-bandwidth utilization ↓
-```
+目标是识别：
 
-如果 configured page size 减小但 actual transfer granularity 没有变小，则不能认为上述机制得到验证。
+- **reuse-limited coarse region**；
+- **balanced trade-off region**；
+- **fragmentation-dominated fine region**。
 
-### Analysis D: Serving-level I/O stall
+## 11. Validity checks
 
-绘制 page size 与 non-overlapped I/O stall 的关系，并与 sustained bandwidth 变化对应。
+正式分析前必须确认：
 
-该分析用于判断 Controlled I/O experiment 中观察到的 bandwidth degradation 是否进入真实 serving critical path。
+1. 同一 Controlled I/O group 的 logical payload bytes 一致；
+2. attention backend 在整个 page-size sweep 中不变；
+3. host memory layout、write policy 与 direct I/O backend 不变；
+4. actual HtoD 与 DtoH traffic 能够区分；
+5. actual operation count / transfer granularity 可观测；
+6. runtime batching/coalescing behavior 已记录；
+7. bandwidth reference 使用匹配的 host-memory condition；
+8. serving run 确实触发目标 CPU-resident restore；
+9. raw transfer duration 与 non-overlapped stall 不互相替代；
+10. invalid / unsupported runs 保留 reason。
 
-## 13. Joint analysis with Experiment 1
+## 12. Interpretation boundaries
 
-Experiment 1 与 Experiment 2 使用相同 page-size axis 进行联合分析。
+本实验可以验证 page granularity 是否通过实际 fragmented I/O 降低 standard-copy efficiency，并判断该损失是否进入 serving critical path。
 
-联合结果至少同时展示：
+本实验不能仅凭 configured page size 宣称 fragmentation 已发生。
 
-- effective reused tokens；
-- cache utilization efficiency；
-- sustained host→GPU bandwidth；
-- bandwidth utilization；
-- non-overlapped I/O stall。
+本实验不能证明 `kernel` GPU-assisted I/O 能够修复该问题，因为该 backend 尚未作为比较变量引入。
 
-联合分析的目标是识别 page granularity 的系统 trade-off：
+如果小 page 提高 reuse 但 actual transfer 已被 runtime 自动聚合、bandwidth 没有显著下降，则应该得出“现代 runtime 已缓解原始 fragmentation mechanism”的结论，而不是强行复现 Strata 的历史结果。
 
-```text
-page size ↓
-    ├── cache reuse ↑
-    └── transfer fragmentation ↑ → I/O efficiency ↓ → I/O stall ↑
-```
+## 13. Final conclusion target
 
-实验不以寻找单独最高的 cache hit rate 或最高的 bandwidth 为目标，而是寻找 reuse benefit 与 I/O penalty 开始发生明显冲突的区域。
+Experiment 2 最终回答：
 
-## 14. Validity checks
+> 在 Experiment 1 确认有 reuse value 的 page-size region 中，哪些 granularity 会真实造成 fragmented CPU→GPU restore、带宽利用率下降和 non-overlapped I/O stall。
 
-正式分析前必须确认以下条件成立：
-
-1. Controlled I/O comparison 中不同 page-size 配置的 logical transfer bytes 一致；
-2. actual transferred bytes、transfer count 和 transfer-size distribution 能够被实际观测；
-3. runtime 的 page merging、coalescing 或 batching 行为已经被识别；
-4. bandwidth measurement 不包含明显无关的计算时间；
-5. Serving-level validation 中 cache hit 实际触发目标 CPU→GPU restore；
-6. non-overlapped I/O stall 与 raw transfer duration 使用不同口径，不直接互相替代；
-7. invalid run 保留记录并标记 invalid reason，不进入正式聚合结果。
-
-## 15. Interpretation boundary
-
-本实验可以证明 page size 与实际 transfer fragmentation、bandwidth efficiency 和 serving I/O stall 之间的关联，并通过 Controlled I/O experiment 建立较强的机制证据。
-
-本实验不能证明 GPU-assisted I/O 能够解决该问题，因为该变量尚未引入。
-
-本实验也不能仅凭 configured page size 推断 fragmentation。正式结论必须依赖实际 transfer count 和 transfer-size distribution。
-
-Serving-level bandwidth degradation 只有在同时观察到 non-overlapped I/O stall 增加时，才能进一步解释为实际 serving bottleneck 的增强。
-
-## 16. Expected conclusion structure
-
-Experiment 2 最终应明确回答：page size 减小时，实际 I/O 是否变得更加碎片化，fragmentation 是否造成 sustained bandwidth 与 bandwidth utilization 下降，以及这种下降是否足以进入 serving critical path。
-
-最终应根据 observed behavior 将 page-size space 划分为大致三个区域：
-
-- **I/O-efficient region**：page 较大，actual transfer granularity 较粗，bandwidth utilization 较高；
-- **trade-off region**：Experiment 1 的 reuse benefit 与 Experiment 2 的 I/O penalty 同时明显；
-- **fragmentation-dominated region**：继续缩小 page 已显著损害 I/O efficiency，并产生可观测 I/O stall。
-
-Experiment 2 的结果与 Experiment 1 的 reuse-efficient region 叠加后，决定 Experiment 3 应重点测试哪些 page-size operating points。
-
-如果 reuse-efficient region 与 I/O-efficient region 存在明显冲突，则 Experiment 3 的核心问题自然变为：GPU-assisted I/O 是否能够恢复这些小 page 配置的传输效率，从而缓解 page granularity 的 reuse-I/O trade-off。
+这些结果直接确定 Experiment 3 需要比较 `direct` 与 `kernel` I/O 的 representative operating points。
