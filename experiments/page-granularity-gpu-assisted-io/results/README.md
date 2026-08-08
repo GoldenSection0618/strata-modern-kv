@@ -55,7 +55,9 @@ Metadata 至少包含：
 - CPU HiCache budget；
 - runtime-observed token/state capacity；
 - allocator padding / relevant capacity counters；
-- cache replacement / eviction policy。
+- cache replacement / eviction policy；
+- residency condition：GPU-resident control / CPU-resident restore / other validated mode；
+- paired-control run ID when applicable。
 
 如果 runtime 将不同 granularity 解耦，还必须分别记录：
 
@@ -149,6 +151,7 @@ Processed data 由脚本从 raw measurements 确定性生成。
 - bandwidth utilization；
 - restore duration；
 - non-overlapped I/O stall；
+- 同 page-size CPU-resident restore vs GPU-resident hit 的 matched latency / throughput delta；
 - joint reuse-I/O trade-off region。
 
 Controlled I/O 与 Serving-level results 分开聚合。
@@ -192,9 +195,11 @@ exact runtime + model + hardware + workload config
 
 Normalized metrics 必须保留对应 absolute values。
 
-Bandwidth figures 必须注明 reference bandwidth 的测量条件，不能只写 theoretical PCIe peak。
+Bandwidth figures 必须注明 shared matched reference bandwidth 的测量条件，不能只写 theoretical PCIe peak。
 
 Page-size figures 必须注明 attention backend 和 page-size support set，避免把不同 backend 的点画在同一条因果曲线上。
+
+Serving-level page-size figures 必须能够标识 matched GPU-resident control，避免把 attention-kernel page-size effect 误判为 restore I/O effect。
 
 ## 5. Large artifacts
 
