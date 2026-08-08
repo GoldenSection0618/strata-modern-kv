@@ -55,7 +55,7 @@ Qwen3.5 combines Gated DeltaNet recurrent/linear-attention layers with full atte
 
 The full model × hardware cross-product is reserved for representative generalization configurations rather than repeating every experiment four times. Earlier A100 cross-model results are reused when the configuration is identical.
 
-Volatile architecture, runtime, and cache-granularity assumptions are recorded in [docs/TECHNICAL_BASELINE.md](docs/TECHNICAL_BASELINE.md). Exact checkpoint revisions, software versions, runtime knobs, cache policies, and capability status must be pinned in every reported experiment.
+Volatile architecture, runtime, hardware, cluster-software, and cache-granularity assumptions are recorded in [docs/TECHNICAL_BASELINE.md](docs/TECHNICAL_BASELINE.md). Exact checkpoint revisions, software versions, runtime knobs, cache policies, and capability status must be pinned in every reported experiment.
 
 A configured offload path is not automatically considered a valid full hierarchy. Hybrid-model experiments must verify that every state group needed to skip the claimed recomputation is correctly restored.
 
@@ -63,7 +63,7 @@ A configured offload path is not automatically considered a valid full hierarchy
 
 Runtime selection follows the mechanism being evaluated rather than assuming one engine is suitable for every experiment.
 
-The Page Granularity and GPU-Assisted I/O group currently targets SGLang HiCache as the primary mechanism path because it exposes an explicit page-size control and separate standard-copy versus GPU-assisted I/O backends. Any target model/runtime pair must still pass the experiment-specific validation gate before results are reported.
+The Page Granularity and GPU-Assisted I/O group uses SGLang HiCache as the preferred mechanism candidate because it exposes an explicit page-size control and separate standard-copy versus GPU-assisted I/O backends. This path is conditional on establishing a non-Docker CUDA-12-compatible build for the current A100 cluster and then passing the experiment-specific runtime/state validation gate.
 
 ## Repository policy
 
