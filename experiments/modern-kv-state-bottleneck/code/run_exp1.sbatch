@@ -16,6 +16,13 @@
 set -euo pipefail
 source "$HOME/yanglihan/env.sh"
 
+# IMPORTANT: flashinfer sampler JIT compilation fails on this CUDA/CUB
+# version (cub 300302: BlockAdjacentDifference has no member "FlagHeads").
+# vLLM 0.26.0 enables VLLM_USE_FLASHINFER_SAMPLER by default, so we MUST
+# disable it here. NOTE: VLLM_ATTENTION_BACKEND is NOT a recognized env var
+# in vLLM 0.26.0 (it logs "Unknown vLLM environment variable") - do not use it.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+
 DL_ROOT="$HOME/yanglihan/dl-stack"
 EXP_ROOT="$DL_ROOT/projects/strata-modern-kv/experiments/modern-kv-state-bottleneck"
 LOG_DIR="$DL_ROOT/projects/strata-modern-kv/logs"

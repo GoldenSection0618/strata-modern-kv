@@ -192,7 +192,7 @@ def run_single(
     # Validation gate
     logger.info("--- Validation Gate ---")
     skip_cpu = (residency_mode != "cpu_hit")
-    validation = run_validation_gate(runner, workload, skip_cpu_hit=skip_cpu)
+    validation = run_validation_gate(runner, workload, skip_cpu_hit=skip_cpu, residency_mode=residency_mode)
     save_validation(validation, output_dir)
 
     if not validation["all_passed"]:

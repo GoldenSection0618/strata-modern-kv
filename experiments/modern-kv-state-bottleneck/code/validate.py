@@ -163,6 +163,7 @@ def run_validation_gate(
     runner,
     workload: TokenWorkload,
     skip_cpu_hit: bool = False,
+    residency_mode: str | None = None,
 ) -> dict:
     """Run all validation checks.
 
@@ -170,6 +171,12 @@ def run_validation_gate(
         runner: VLLMRunner instance
         workload: TokenWorkload for the context length being tested
         skip_cpu_hit: If True, skip CPU-resident hit check
+        residency_mode: One of "recompute" / "gpu_hit" / "cpu_hit".
+            Used to skip cache-hit checks that are meaningless for a given
+            mode.  In particular, recompute disables prefix caching, so
+            GPU/CPU resident-hit checks would always fail there; they are
+            skipped instead.  When None, legacy behavior is kept
+            (GPU hit check always runs).
 
     Returns:
         dict with:
@@ -181,7 +188,15 @@ def run_validation_gate(
 
     checks.append(check_model_architecture(runner))
     checks.append(check_prefix_cache_consistency(runner, workload))
-    checks.append(check_gpu_resident_hit(runner, workload))
+
+    # GPU-resident hit is only meaningful when prefix caching is enabled.
+    # recompute disables prefix caching, so skip the check there.
+    if residency_mode == "recompute":
+        checks.append(
+            ("gpu_resident_hit", None, "Skipped (recompute: prefix caching disabled)")
+        )
+    else:
+        checks.append(check_gpu_resident_hit(runner, workload))
 
     if skip_cpu_hit:
         checks.append(("cpu_resident_hit", None, "Skipped (skip_cpu_hit=True)"))

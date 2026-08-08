@@ -12,8 +12,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any
+
+# IMPORTANT: flashinfer sampler JIT compilation fails on this CUDA/CUB
+# version (cub 300302: BlockAdjacentDifference has no member "FlagHeads").
+# vLLM 0.26.0 enables VLLM_USE_FLASHINFER_SAMPLER by default, so disable it
+# before vllm is imported. NOTE: VLLM_ATTENTION_BACKEND is NOT a recognized
+# env var in vLLM 0.26.0 (logs "Unknown vLLM environment variable").
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 
 from transformers import AutoTokenizer
 
@@ -81,6 +89,13 @@ class VLLMRunner:
             enable_prefix_caching=(residency_mode != "recompute"),
             cpu_offload_gb=cpu_offload_gb,
         )
+
+        # Qwen3.5 has Mamba layers: each decode sequence needs 1 Mamba cache
+        # block. Default max_num_seqs=256 exceeds the block budget at low
+        # memory util and fails CUDA graph capture. Cap it at 16 (see
+        # clever-vlm-serve.md).
+        if model_id.startswith("qwen") or "Qwen" in model_id:
+            engine_kwargs["max_num_seqs"] = 16
 
         if kv_offloading_size is not None:
             engine_kwargs["kv_offloading_size"] = kv_offloading_size
