@@ -20,7 +20,9 @@ end-to-end net benefit
 
 ## Runtime scope
 
-主路径使用 **SGLang HiCache**，因为当前 HiCache 同时提供：
+**SGLang HiCache 是本实验组的首选机制候选，不是当前已经验证可运行的 runtime baseline。**
+
+选择它的原因是当前 HiCache 同时提供：
 
 - `--page-size`；
 - `--hicache-io-backend direct`；
@@ -29,7 +31,9 @@ end-to-end net benefit
 
 `direct` 作为 standard CUDA-copy baseline，`kernel` 作为 GPU-assisted I/O path。
 
-所有 serving-level 结果都以 [`docs/00-common-conventions.md`](docs/00-common-conventions.md) 的 runtime capability gate 为前提。目标 hybrid model 如果不能验证完整 cache/state restore，则只能保留 mechanism-level / partial evidence，不能报告为完整 modern-hybrid serving result。
+正式执行前必须先通过仓库 [`docs/TECHNICAL_BASELINE.md`](../../docs/TECHNICAL_BASELINE.md) 中定义的 cluster software/build gate，建立与当前集群兼容的 non-Docker CUDA-12 SGLang 环境。随后还必须通过 [`docs/00-common-conventions.md`](docs/00-common-conventions.md) 的 model/runtime/full-state capability gate。
+
+Upstream feature availability 不能替代本地 execution validation。目标 hybrid model 如果不能验证完整 cache/state restore，则只能保留 mechanism-level / partial evidence，不能报告为完整 modern-hybrid serving result。
 
 ## Scope
 
