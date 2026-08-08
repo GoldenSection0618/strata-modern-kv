@@ -2,560 +2,358 @@
 
 ## 1. 实验目标
 
-本实验用于研究多个请求在短时间内集中访问同一 reusable context 时，现代 serving 系统是否会出现明显的 cache reuse failure 和 scheduler contention。
+本实验专门研究多个请求在短时间内访问同一 context 时，现代 serving runtime 是否仍然出现 Strata 所定义的 delay hit。
 
-实验固定总体 request arrival rate，只改变同一 context 请求在时间上的聚集程度，并观察高并发热点是否导致 delay hit、redundant prefill、重复 cache loading、queueing 和 TTFT 恶化。
+Delay hit 的核心条件是：第一个相关请求发生 cache miss 后，该 context 尚未 resolve；后续同-context 请求在这个 resolve window 内到达。如果 scheduler 未正确协调，这些请求可能被再次视为 miss，并产生 redundant prefill / recomputation。
 
-本实验主要回答三个问题：
+本实验固定长期平均 offered request rate，只改变同一 context 在 resolve window 内的并发聚集程度，从而把 hot-context overlap 与普通全局 overload 分离。
 
-1. 同一 context 的并发请求增加后，已有 cache reuse opportunity 是否仍然能够被有效利用；
-2. delay-hit mitigation 是否能够阻止多个请求在同一 cache/state 尚未 ready 时重复执行 prefill 或其他重复工作；
-3. 完整 scheduler 是否能够在高共享、高并发 workload 下保持稳定的 TTFT、throughput 和 fairness。
+本实验主要回答：
 
-Experiment 1 研究 locality × overall load 的一般关系。
-
-Experiment 2 研究不同 scheduler mechanism 的贡献。
-
-Experiment 3 不重新进行这两类 sweep，而是单独研究 **hot-context concurrency** 这一特殊但重要的压力场景。
+1. same-context fan-in 增大后，cold-miss resolve 是否产生更多 delay hit 与 redundant work；
+2. delay-hit mitigation 是否能通过合理 deferral 提高 reuse realization；
+3. full scheduler 是否在 delay hit 被处理后仍能改善 residual loading / queueing；
+4. CPU-resident restore 是否形成类似的 coordination problem，以及它与 cold-miss delay hit 有何区别。
 
 所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
 
-## 2. 核心实验变量
+## 2. 主实验场景：Cold-miss resolve
 
-本实验的主要自变量为 **same-context fan-in**。
+主实验使用 `cold-miss` 状态，而不是把 CPU restore 作为 delay hit 的定义前提。
 
-Same-context fan-in 表示在一个 reusable context 尚未完成所需 cache/state restore 或 reuse preparation 时，同时到达并希望复用该 context 的请求数量。
+每个目标 context 在对应 burst 开始前尚未 materialize 为可复用 cache/state。
 
-实验设置四个 concurrency level。
+第一个请求触发该 context 的实际 prefill / state construction。后续同-context 请求被安排在这一 cache resolve window 内以构造 C1–C3 fan-in。
 
-| Level | 含义 |
+概念流程为：
+
+```text
+first request misses
+        ↓
+context computation / cache materialization is in progress
+        ↓
+more requests for the same context arrive
+        ↓
+wait for resolve and reuse OR duplicate work
+```
+
+这与 Strata 对 delay hit 的原始定义一致，也避免把 cache eviction、CPU hierarchy 和 host-transfer latency混入主因果链。
+
+## 3. 主要自变量：Same-context fan-in
+
+Same-context fan-in 表示一个目标 context 的首次 miss 尚未 resolve 时，到达并引用该 context 的请求数量。
+
+实验设置四个 level。
+
+| Level | 定义 |
 |---|---|
-| C0 | 同一 context 请求基本不重叠，作为 serialized control |
-| C1 | 少量请求发生 overlap |
-| C2 | 明显的同-context 并发 |
-| C3 | 接近当前稳定 serving 条件下能够形成的高并发热点 |
+| C0 | 同-context 请求基本不落入同一 resolve window，作为 serialized control |
+| C1 | 少量请求在 resolve window 内 overlap |
+| C2 | 明显的同-context overlap |
+| C3 | 高 fan-in burst，但系统整体仍处于 stable-serving 区域 |
 
-具体 fan-in 数量在实验前 calibration 中确定。
+具体 fan-in 数量不跨模型固定，而由 calibration 根据实际 cache resolve time 与系统稳定性确定。
 
-C0-C3 的划分以实际 overlap 和系统稳定性为依据，而不是跨模型固定使用同一绝对请求数。
+C3 不允许通过全局持续 overload 人为制造。
 
-C3 必须仍处于可以完成稳定测量的区域，不通过系统整体 overload 人为制造 scheduler failure。
+## 4. 固定长期总体负载
 
-## 3. 固定总体负载
+C0–C3 使用相同长期平均 offered request rate。
 
-本实验不通过提高总体 request arrival rate 来增加 same-context concurrency。
+默认使用 Experiment 1 已经确认的 `High but stable` operating point，因为该区域更容易观察 delay hit，同时仍能与 capacity saturation 分离。
 
-所有 C0-C3 workload 使用相同的平均 offered request rate。
+提高 fan-in 时，只压缩同一 context group 内请求的局部到达间隔，并在其他时间段补偿，使完整 trace 的：
 
-该 request rate 选择 Experiment 1 中已经确认的 **High but stable** load point。
-
-不同 concurrency level 只改变同一 context 请求在局部时间窗口中的聚集程度。
-
-当某个 context 的多个请求被压缩到更短时间窗口时，后续请求间隔相应调整，使整个 trace 的长期平均 arrival rate 保持一致。
-
-因此主实验保持：
-
-```text
-overall offered load = fixed
-context reuse opportunity = fixed
-request count = fixed
-same-context temporal concentration = variable
-```
-
-这种设计用于把 hot-context concurrency 与普通系统 saturation 分离。
-
-## 4. Workload 构造
-
-实验建立固定的 reusable-context pool。
-
-每个 context 对应多个请求。
-
-同一个 context group 内的 reusable prefix/context 完全一致，suffix/query 不同，output request 不完全相同。
-
-实验不使用大量完全重复的 identical requests，因为目标是研究 context reuse，而不是重复请求缓存。
-
-不同 context group 使用匹配的 context length 和请求数量，使某一个热点 context 不因内容长度特殊而产生系统性偏差。
-
-## 5. Concurrency trace 构造
-
-所有 concurrency workload 使用相同的 logical request set。
-
-不同 workload 只改变同一 context 请求的 arrival timestamp。
-
-### C0: Serialized
-
-同一 context 的请求被充分错开。
-
-后续请求到达时，前一个请求触发的 cache/state preparation 已经完成。
-
-该条件表示理想情况下不存在明显 same-context race。
-
-### C1: Low fan-in
-
-少量同-context 请求在 cache/state preparation 尚未结束时发生 overlap。
-
-该条件用于观察 scheduler pathology 开始出现的位置。
-
-### C2: Medium fan-in
-
-更多请求集中进入同一个 reuse window。
-
-该条件用于观察 delay hit、redundant prefill 和 queueing 是否开始明显放大。
-
-### C3: High fan-in
-
-同一 context 在很短的时间窗口内收到大量请求。
-
-该条件用于测试 scheduler 对 hot-context burst 的稳定性。
-
-不同 concurrency trace 使用完全相同的：
-
-- context pool；
-- 每个 context 的访问次数；
-- input/output length distribution；
 - total request count；
-- total theoretical reusable-token volume；
-- average offered request rate。
+- trace duration；
+- average offered request rate；
+- context pool；
+- per-context request count；
+- input/output length distribution；
+- theoretical reusable volume
 
-## 6. Cache initial state
+保持一致。
 
-主实验使用 **warm reusable context，但目标 state 在正式 burst 开始时不处于 GPU-ready 状态** 的条件。
+实验同时记录瞬时 burst rate，因为长期平均 rate 一致并不意味着局部负载一致。局部 burstiness 是本实验有意控制的变量之一。
 
-目标 context 已经具有可以被重新利用的 cache/state，因此后续请求理论上不需要重新完成整个 prefix computation。
+## 5. Workload 构造
 
-同时，该 state 需要经历当前系统真实的 restore / loading / preparation path。
+实验建立固定 context pool。
 
-这样才能触发 Experiment 3 真正需要研究的问题：
+每个 context group 包含多个共享同一 prefix/context 的请求。Suffix/query 与 output generation 不完全相同，避免把任务退化为 identical-request memoization。
+
+不同 context group 使用匹配的 prefix length 和访问次数，避免单个 context 因长度特殊而主导结果。
+
+每条请求保存：
+
+- context group ID；
+- arrival timestamp；
+- fan-in burst ID；
+- input/output token length；
+- eligible reusable token/state volume；
+- request position within burst。
+
+第一个 cold-miss request 本身不计入“理论可被前序 cache 复用”的 volume。Reuse realization 的分母只统计在首次 resolve 后理论上可以通过等待复用而避免重复工作的后续请求部分。
+
+## 6. Cache resolve time
+
+每个 burst 实际测量 cache resolve time，而不是只根据设定值推断。
+
+定义：
 
 ```text
-reusable state exists
-        ↓
-first request begins preparing/restoring it
-        ↓
-other requests for same context arrive
-        ↓
-scheduler decides wait / reuse / recompute
+cache resolve time
+=
+matching context first becomes safely reusable
+-
+first unresolved miss is accepted
 ```
 
-如果 context 从一开始就完整 GPU-resident，大部分 delay-hit 问题不会被暴露。
+开始和结束事件必须来自 runtime observable behavior 或 instrumentation。
 
-正式运行前必须通过 runtime observable behavior 验证目标 state 的初始 residency 与 restore/preparation path，不能仅根据配置推断其状态。
+Experiment 3 不把 cache resolve time 作为新的完整 sweep axis。它主要作为解释 fan-in 与 delay-hit probability 的 observed variable。
 
-## 7. GPU-resident control
+如果需要复验 Strata Figure 12 的方向，可以在主结果后补充极少量 timing-sensitivity points，但不能因此扩展成第三个大规模维度。
 
-实验增加一个 GPU-resident control。
+## 7. Scheduler configurations
 
-选择代表性的 C0 与 C3 workload，在正式请求开始前保证目标 reusable context 已处于可直接使用的 GPU-resident 状态。
-
-该 control 用于区分高并发本身造成的 queueing，与 cache/state 尚未 ready 时同-context 高并发造成的 delay-hit pathology。
-
-如果 C3 在 restore-required 条件下明显恶化，而 GPU-resident C3 中该现象大幅减弱，则能够更有力地说明问题来自 cache preparation race，而不是普通的请求并发。
-
-GPU-resident control 不进行完整 C0-C3 sweep。
-
-## 8. Scheduler configurations
-
-本实验不重新进行 Experiment 2 的完整四级 component ablation。
-
-主实验使用三个 scheduler configuration。
+主实验使用三个 configuration：
 
 | Configuration | 作用 |
 |---|---|
-| S0 Baseline | 建立 hot-context pathology baseline |
-| S1 Delay-hit mitigation | 直接测试同-context race 的核心机制 |
-| S3 Full scheduler | 测试完整 control plane 在压力场景下的最终表现 |
+| S0 Baseline | 测量未处理的 same-context delay hit |
+| S1 Delay-hit mitigation | 验证 defer-until-resolved 机制 |
+| S3 Full scheduler | 检查其他 scheduler stages 是否还有额外价值 |
 
-Balanced batching 和 stall hiding 的独立贡献已经由 Experiment 2 分析。
+Experiment 2 已负责 balanced batching 与 stall hiding 的独立 attribution，因此 Experiment 3 不重复完整 S0–S3 component matrix。
 
-Experiment 3 重点判断以下序列在 same-context concurrency 增强时是否能够逐步保持系统稳定：
+所有 scheduler configuration 必须通过 Experiment 2 的 semantic capability gate。
 
-```text
-Baseline
-→ Delay-hit mitigation
-→ Full scheduler
-```
+## 8. 主实验矩阵
 
-## 9. 主实验矩阵
+主矩阵为 4 fan-in levels × 3 scheduler configurations，共 12 conditions。
 
-主实验采用四个 concurrency levels 与三个 scheduler configurations 的交叉设计，共 12 个主要条件。
-
-| Same-context fan-in | Baseline | Delay-hit mitigation | Full scheduler |
+| Fan-in | Baseline | Delay-hit mitigation | Full scheduler |
 |---|---:|---:|---:|
 | C0 | ✓ | ✓ | ✓ |
 | C1 | ✓ | ✓ | ✓ |
 | C2 | ✓ | ✓ | ✓ |
 | C3 | ✓ | ✓ | ✓ |
 
-另外增加少量 GPU-resident control。
-
 每个 condition 进行多次独立重复测量。
 
-## 10. 实验前 calibration
+## 9. GPU-ready control
 
-Calibration 首先确定 Experiment 1 中 High but stable 的 request-rate operating point。
+增加少量 `gpu-ready` control。
 
-然后在固定 overall arrival rate 下逐渐提高 same-context fan-in。
+选择 C0 与 C3，在 burst 开始前保证目标 context 已经 GPU-ready。
 
-Calibration 记录：
+该 control 用于区分：
 
-- 实际 overlap request count；
+- burst concurrency 本身造成的 queueing/contention；
+- unresolved miss 导致的 delay-hit-specific pathology。
+
+如果 cold-miss C3 明显恶化，而 gpu-ready C3 中 redundant work 消失且 tail latency 大幅缓解，则支持 delay-hit interpretation。
+
+GPU-ready control 不需要完整 C0–C3 sweep。
+
+## 10. CPU-restore extension
+
+在 full hierarchical restore 已通过 validation 时，增加少量 `cpu-restore` control。
+
+目标 context 已经存在于 CPU tier，但 burst 开始时尚未 GPU-ready。第一个相关请求触发 restore，其他请求可能在 restore resolve window 内到达。
+
+建议只运行代表性的 C0 与 C3，并比较 S0、S1。
+
+该扩展回答：delay-hit coordination 是否也出现在 host restore 尚未完成时。
+
+CPU-restore 结果与 cold-miss 主结果分开报告。它不能用来重新定义 delay hit，也不能在 partial hierarchy 状态下并入 full-state结论。
+
+## 11. Calibration
+
+Calibration 分两步执行。
+
+### 11.1 固定 stable load
+
+复用 Experiment 1 的 High stable operating point，并确认当前 cold-miss trace 在 baseline 下不会形成持续 backlog。
+
+### 11.2 确定 C0–C3
+
+测量目标 prefix 长度下的实际 cache resolve time，然后逐步压缩同-context arrival spacing。
+
+记录：
+
+- observed fan-in；
+- cache resolve time；
+- instantaneous burst rate；
 - effective concurrency；
-- achieved request rate；
 - backlog；
+- achieved request rate；
 - active-request preemption；
-- OOM 或 runtime instability。
+- runtime instability。
 
-C3 选择为能够形成明显 hot-context pressure，但仍不会使整个系统进入持续 overload 的最大代表性区域。
+C3 选择为能够形成明显 overlap，但不依赖全局 overload 的最高代表性区域。
 
-任何依赖全局 saturation 才能形成的 concurrency level 不进入主实验。
+## 12. 正式实验流程
 
-## 11. 正式实验流程
+每轮实验：
 
-每轮实验首先建立规定的 reusable-context residency。
+1. 恢复目标 resolve mode；
+2. 验证 cold-miss / gpu-ready / cpu-restore 状态符合设计；
+3. 启动固定 trace；
+4. 记录首次 miss、resolve transition、后续 same-context arrival、scheduler decision、reuse/recomputation 和 completion events；
+5. 保存 per-request 与 per-burst metrics；
+6. 重复测量并随机化 configuration 执行顺序。
 
-随后验证目标 context 的 state 当前确实需要经过预定的 restore / preparation path。
+不同 scheduler configuration 使用完全相同的 exact arrival timestamps。
 
-系统加载固定 request trace，并按照 C0-C3 对应 timestamps 发送请求。
+## 13. Delay-hit / reuse metrics
 
-不同 scheduler configuration 使用完全相同的 trace。
+记录：
 
-每轮实验记录目标 context 的 state availability、restore / preparation transition、concurrent waiter、cache hit / miss decision、recomputation 和 request completion。
-
-正式实验重复多次。
-
-不同 configuration 和 concurrency level 的执行顺序交替或随机化。
-
-## 12. Reuse realization 指标
-
-Experiment 3 的核心不是普通 request-level cache hit rate，而是理论可复用工作究竟有多少真正被复用了。
-
-实验记录：
-
-- theoretical reusable token/state volume；
-- realized reused token/state volume；
-- redundant recomputation volume；
-- redundant prefill；
-- reuse realization ratio。
-
-定义概念上满足：
-
-```text
-reuse realization
-=
-actually reused reusable work
-/
-theoretically reusable work
-```
-
-如果 concurrency 增大后 theoretical reuse 不变，而 realized reuse 明显下降，则说明高并发正在破坏 reuse opportunity。
-
-## 13. Delay-hit 行为
-
-实验记录：
-
+- unresolved same-context arrivals；
 - delay-hit event count；
-- affected request count；
-- affected token/state volume；
-- requests arriving while matching state is being prepared；
-- requests successfully deferred；
-- requests incorrectly falling back to recomputation；
-- redundant prefill volume。
+- affected request/token/state volume；
+- deferred request count；
+- deferral duration；
+- redundant prefill / recomputation；
+- realized reused volume；
+- reuse realization ratio；
+- cache resolve time。
 
-核心分析链为：
+Reuse realization 概念定义为：
 
 ```text
-same-context fan-in increases
-        ↓
-more requests arrive during state preparation
-        ↓
-delay-hit opportunity increases
-        ↓
-wait/reuse OR redundant recomputation
+actually reused eligible work
+/
+theoretically reusable work after the initial miss
 ```
 
-S0 与 S1 的主要区别必须通过这一机制链解释。
+如果 fan-in 增大而 theoretical reusable work 保持不变，但 realized reuse 下降，则说明 concurrency 正在破坏 reuse opportunity。
 
-## 14. Cache / restore behavior
+## 14. Queueing 与 serving metrics
 
-实验记录目标 reusable context 的：
-
-- GPU residency transition；
-- CPU-resident reuse；
-- restore count；
-- restore volume；
-- duplicate restore activity；
-- cache/state preparation duration；
-- non-overlapped I/O stall。
-
-理想情况下，多个并发请求访问同一 reusable context 时，不应产生与请求数量近似线性增长的重复 restore 或重复 prefill。
-
-如果 C3 中同一 context 产生明显重复 data movement，则该行为作为单独的 scheduler/cache-coordination pathology 报告。
-
-## 15. Queueing 与请求等待
-
-实验记录：
+统一记录：
 
 - queueing delay；
 - scheduler deferral time；
-- within-burst waiting time；
-- maximum waiting time；
-- queue-age distribution。
-
-Delay-hit mitigation 本质上可能主动让部分请求等待 cache ready。
-
-因此 waiting time 增加本身不等价于 regression。
-
-需要判断这种等待是否换来了更少的 redundant computation，并最终改善 TTFT 或系统 throughput。
-
-## 16. 用户可见性能
-
-实验统一报告：
-
-- P50 TTFT；
-- P90 TTFT；
-- P99 TTFT；
-- throughput；
+- P50/P90/P99 TTFT；
 - request completion time；
-- TPOT 或等价 decode latency。
+- throughput；
+- TPOT / decode latency；
+- maximum waiting time；
+- starvation event。
 
-Same-context burst 特别关注 tail TTFT。
+Delay-hit mitigation 可能有意增加某些请求的短期等待，因此 waiting time 增加本身不等价于 regression。判断依据是等待是否换来 redundant work reduction，并最终改善或至少不恶化 relevant SLO。
 
-即使平均 TTFT 基本稳定，高并发热点仍可能使 burst 中后到达的请求产生严重 tail latency。
+## 15. Burst-level metrics
 
-## 17. Burst-level 指标
+每个 hot-context burst 单独保存：
 
-除全局指标外，Experiment 3 单独保存每个 hot-context burst 的统计。
-
-每个 burst 记录：
-
-- fan-in；
+- observed fan-in；
+- cache resolve time；
 - first-request TTFT；
-- median TTFT；
-- last-request TTFT；
+- median / last-request TTFT；
 - burst completion span；
-- redundant prefill；
-- realized reuse；
-- restore activity。
-
-这样能够观察同一组请求内部性能如何随请求位置变化。
-
-例如：
-
-```text
-request 1 triggers restore
-request 2 arrives during restore
-request 3 arrives during restore
-...
-```
-
-如果 baseline 中后续请求的 TTFT 和 redundant work 随 fan-in 快速增长，而 delay-hit mitigation 后明显缓解，则能够形成比全局平均指标更直接的证据。
-
-## 18. 分析一：Baseline 对 concurrency 的敏感性
-
-首先只分析 S0。
-
-比较：
-
-```text
-C0 → C1 → C2 → C3
-```
-
-判断随着 same-context fan-in 增加：
-
-- delay hit 是否增加；
-- realized reuse 是否下降；
-- redundant prefill 是否增加；
-- duplicate restore 是否出现；
-- P99 TTFT 是否恶化。
-
-这一分析回答 Baseline scheduler 是否存在真正的 hot-context concurrency pathology。
-
-如果 S0 从 C0 到 C3 基本稳定，则说明现代 runtime 已经能够较好处理同-context coordination，Experiment 3 的后续 scheduler 收益预期应相应降低。
-
-## 19. 分析二：Delay-hit mitigation
-
-主要比较 S0 与 S1，重点分析 C2 和 C3。
-
-判断 delay-hit mitigation 是否增加合理 deferral、减少 premature miss、减少 redundant prefill、提高 reuse realization，并改善 TTFT tail 或 throughput。
-
-如果 S1 只是增加 waiting time，但没有减少 redundant work，则该机制在当前 runtime 下没有实现预期价值。
-
-## 20. 分析三：Full scheduler
-
-主要比较 S1 与 S3。
-
-重点判断 delay-hit 问题被处理以后，balanced batching 与 stall hiding 是否还能进一步改善高并发热点。
-
-观察 exposed I/O stall、GPU utilization、queueing、throughput 与 TTFT tail。
-
-如果 S1 已经获得绝大部分收益，而 S3 几乎没有进一步改善，则说明 hot-context workload 的主要 scheduler bottleneck 是 delay hit。
-
-该结果属于有价值的机制结论。
-
-## 21. 分析四：GPU-resident control
-
-比较 restore-required 与 GPU-resident 条件，重点使用 C3。
-
-如果：
-
-```text
-restore-required C3
-→ delay hit / redundant work sharply increases
-
-GPU-resident C3
-→ same pathology largely disappears
-```
-
-则说明问题主要来自 reusable state preparation 与并发请求之间的协调。
-
-如果 GPU-resident C3 仍然出现相似 TTFT 和 queueing deterioration，则说明主要瓶颈可能是一般性 high-concurrency contention，而不能完全归因于 delay hit。
-
-## 22. Fairness 与 starvation 检查
-
-Scheduler 不允许通过长期推迟某些 hot-context requests 来获得更高 aggregate throughput。
-
-实验记录：
-
-- maximum request waiting time；
-- P99 queueing；
-- starvation event；
-- burst 内最慢请求；
-- request completion ordering。
-
-任何出现明显 starvation 的 configuration 都必须单独报告。
-
-即使 aggregate throughput 更高，也不能直接视为稳定的 scheduler improvement。
-
-## 23. 实验控制条件
-
-除 same-context fan-in 和 scheduler configuration 外，主要条件保持固定。
-
-包括：
-
-- model identifier / revision；
-- hardware；
-- precision；
-- cache dtype；
-- cache hierarchy；
-- cache capacity；
-- page/cache policy；
-- I/O backend；
-- context pool；
-- context length；
-- suffix/input distribution；
-- output length distribution；
-- total request count；
-- theoretical reuse opportunity；
-- average offered arrival rate。
-
-本实验不 sweep：
-
-- context length；
-- cache capacity；
-- page size；
-- I/O backend；
-- overall request rate；
-- hardware。
-
-这些变量分别由其他实验组研究。
-
-## 24. 结果组织
-
-Experiment 3 至少形成以下结果。
-
-### Figure A: Concurrency pathology curve
-
-横轴为：
-
-```text
-C0 → C1 → C2 → C3
-```
-
-纵轴分别展示：
-
-- delay hit；
+- delay-hit count；
 - redundant prefill；
 - reuse realization；
-- duplicate restore。
+- scheduler deferral；
+- restore activity when cpu-restore mode is used。
 
-比较 S0、S1 和 S3。
+Burst timeline 是本实验的重要证据，因为它可以直接显示第一个 miss 与后续请求的重叠关系。
 
-### Figure B: User-visible performance
+## 16. 分析一：Baseline fan-in sensitivity
 
-展示：
+只看 S0，比较 C0→C3。
 
-- P50/P90/P99 TTFT；
-- throughput；
-- request completion time。
+判断 fan-in 增大后：
 
-观察 scheduler-level pathology 是否真正传导到 serving performance。
+- unresolved same-context arrivals 是否增加；
+- delay hit 是否增加；
+- redundant work 是否增加；
+- reuse realization 是否下降；
+- P99 TTFT / burst completion span 是否恶化。
 
-### Figure C: Burst behavior
+如果 S0 在 C0–C3 下保持稳定，则说明当前 runtime 已经较好地协调同-context miss，Strata-style delay-hit optimization space 收缩。
 
-选择代表性的 C3 burst，展示 burst 内不同请求的 arrival、wait、restore/reuse、prefill 与 TTFT。
+## 17. 分析二：Delay-hit mitigation
 
-该结果用于直接展示 hot-context race 的实际执行行为。
+比较 S0 vs S1，重点分析 C2/C3。
 
-### Figure D: Residency control
-
-比较：
+理想证据链为：
 
 ```text
-restore-required C3
-vs
-GPU-resident C3
+more same-context overlap
+        ↓
+baseline duplicate work
+        ↓
+S1 defers later requests until resolve
+        ↓
+redundant work decreases
+        ↓
+reuse realization / tail TTFT improves
 ```
 
-用于区分 cache-preparation contention 与一般性 concurrency contention。
+如果 S1 只增加等待而不减少 duplicate work，则该 mechanism 在当前 runtime 下没有实现预期价值。
 
-## 25. 结果判断逻辑
+## 18. 分析三：Full scheduler
 
-### 情况 A：Baseline 随 fan-in 明显恶化，delay-hit mitigation 有效
+比较 S1 vs S3。
 
-随着 C0-C3，baseline delay hit、redundant prefill 和 tail TTFT 明显增加。
+Cold-miss delay hit 被处理后，如果 remaining bottleneck 主要来自普通 compute/queueing，则 full scheduler 可能没有额外收益。
 
-S1 显著减少 redundant work，并提高 realized reuse。
+如果同时存在 host loading 或 residual stall，S3 可能进一步改善 TTFT / throughput。
 
-该结果说明 Strata 所针对的 same-context delay-hit problem 在现代 workload 中仍然存在。
+该比较只判断额外价值，不重新归因 balanced batching / stall hiding 的独立机制。
 
-### 情况 B：Baseline 出现 pathology，但完整 scheduler 的额外收益有限
+## 19. 分析四：Controls
 
-S1 已经消除大部分问题，S3 相对 S1 增益较小。
+### GPU-ready
 
-该结果说明同-context 高并发的主要问题是 delay-hit coordination，而不是 batch balancing 或 stall hiding。
+如果 gpu-ready C3 仍出现严重 queueing 但没有 redundant prefill，则说明其中一部分 tail latency 来自 burst concurrency 本身，而不是 delay hit。
 
-### 情况 C：内部 pathology 存在，但端到端影响有限
+### CPU-restore
 
-Concurrency 增加导致 delay hit 或 redundant work 增加，但 TTFT / throughput 基本不变。
+如果 cold-miss 与 cpu-restore 都出现 same-context coordination failure，则说明 unresolved-context coordination 问题跨 compute-resolve 与 load-resolve 两类路径存在。
 
-该结果说明当前系统仍有足够资源吸收这些额外工作。
+如果只有 cpu-restore 出现问题，则主要瓶颈更接近 hierarchical-cache loading coordination，而不是一般 cold-miss delay hit。
 
-不能据此声称 scheduler optimization 具有显著 serving benefit。
+## 20. 结果输出
 
-### 情况 D：GPU-resident 条件下问题消失
+至少形成：
 
-Restore-required C3 明显恶化，而 GPU-resident C3 基本稳定。
+1. C0–C3 的 delay-hit / redundant-work / reuse-realization curve；
+2. S0 vs S1 vs S3 的 P50/P90/P99 TTFT 与 throughput；
+3. 代表性 C3 burst timeline；
+4. cold-miss C3 vs gpu-ready C3 control；
+5. 可用时增加 cold-miss vs cpu-restore C3 comparison；
+6. cache resolve time 与 observed fan-in summary。
 
-该结果能够较强地支持性能问题来自 cache/state preparation 与并发请求之间的 coordination，而不是并发本身。
+## 21. 结果判断逻辑
 
-### 情况 E：所有 concurrency level 均稳定
+### A. Baseline 随 fan-in 明显恶化，S1 有效
 
-S0 在 C0-C3 下都能够保持较高 reuse realization，并且几乎没有 redundant prefill 或异常 tail latency。
+该结果说明 Strata 定义的 same-context delay hit 在现代 runtime 中仍然存在。
 
-该结果说明当前 runtime 已经能够较好处理 same-context concurrency。
+### B. Baseline 有 pathology，但 S1 已获得绝大部分收益
 
-Strata 原本针对的这一 scheduler pathology 在现代系统中的重要性已经下降。
+该结果说明 hot-context 场景主要由 delay-hit coordination 主导，full scheduler 的其他阶段增量有限。
 
-## 26. 实验边界
+### C. 内部 duplicate work 增加但端到端影响有限
 
-Experiment 3 只研究 **same-context concurrency**。
+说明 pathology 存在但不是当前 dominant bottleneck，不能仅根据内部 metric 声称显著 serving value。
 
-本实验不重新研究一般 locality × arrival-rate surface，也不重新执行完整 scheduler component ablation。
+### D. GPU-ready control 同样恶化
 
-Experiment 1 已经确定普通 workload 下问题出现在哪里。
+说明大量性能下降来自一般 burst concurrency / queueing。Delay-hit-specific claim 必须只基于 cold-miss 相对 gpu-ready 的额外部分。
 
-Experiment 2 已经确定各 scheduler mechanism 分别解决什么问题。
+### E. C0–C3 均稳定
 
-Experiment 3 提供一个针对 hot shared context 的压力验证。
+说明当前 runtime 已经能够较好处理 unresolved same-context requests。Strata delay-hit mechanism 的 operating region 在当前 stack 上明显缩小。
 
-这些结果最终由 Experiment 4 统一形成 scheduler operating region。
+## 22. 实验边界
+
+Experiment 3 只研究 same-context concurrency 与 unresolved-context coordination。
+
+Experiment 1 已建立一般 cache-distance × load surface。Experiment 2 已做 scheduler component attribution。Experiment 4 负责把本实验的 hot-context规则与一般 workload operating map 合并。
