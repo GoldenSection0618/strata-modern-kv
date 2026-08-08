@@ -2,7 +2,7 @@
 
 ## 1. Evaluation objective
 
-The objective is to re-evaluate the main systems claims behind Strata under modern hybrid LLMs and current GPU platforms.
+The objective is to re-evaluate the main systems claims behind Strata under modern hybrid LLMs and the GPU platforms available to this project.
 
 The experiment suite is organized around causal questions rather than one-to-one figure reproduction. Each group must be broad enough to support a credible conclusion while avoiding repeated measurements that answer the same question.
 
@@ -42,29 +42,36 @@ This group establishes whether the rest of the Strata-style optimization space i
 
 ### 2.2 Hierarchical cache value
 
-**Question:** When GPU memory is constrained, is extending reusable cache/state into CPU memory still worthwhile?
+**Question:** When reusable GPU cache capacity is constrained, is extending reusable cache/state into CPU memory still worthwhile?
 
-Compare explicit residency conditions:
+This group compares two system architectures under matched GPU cache budgets:
 
-- GPU-only / GPU-resident reuse;
-- CPU-resident hierarchical reuse;
-- recomputation when the reusable state is unavailable.
+- **GPU-only**: reusable state is lost after GPU eviction and must be recomputed on a later revisit;
+- **GPU + CPU hierarchical cache**: reusable state may survive GPU eviction in the validated CPU tier and be restored on a later revisit.
 
-Evaluate under different combinations of:
+GPU hits, CPU hits, and recomputation are measured as outcomes. They are not treated as three independent forced-residency configurations in this group.
 
-- GPU cache-capacity pressure;
-- prefix-reuse intensity;
-- representative context sizes.
+The group contains four experiments:
 
-Observe:
+1. **Baseline Benefit**: GPU-only vs hierarchical cache under cold-cache and warm-cache conditions;
+2. **GPU Cache Pressure Scaling**: vary only reusable-cache capacity pressure while keeping workload reuse fixed;
+3. **Prefix Reuse Scaling**: vary only prefix revisit/reuse opportunity while keeping cache pressure and locality structure fixed;
+4. **Cross-Model Validation**: run a small matched validation on the second model rather than repeating the full sweeps.
 
-- GPU and CPU cache-hit behavior;
-- recomputation;
-- CPU-GPU traffic;
-- TTFT;
-- throughput.
+Experiments 1–3 use one validated primary model on A100 40GB. The default candidate is Qwen3.5-9B because it exercises both attention KV and Gated DeltaNet recurrent state, but this is conditional on the full hybrid-state offload/restore gate in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md). A partial Qwen3.5 offload path must not be reported as full hierarchical caching.
 
-This group evaluates the value of the cache hierarchy itself, independently from later I/O and scheduler optimizations.
+Experiment 4 validates representative conclusions on the second model on A100. The later Model and Hardware Generalization group reuses these A100 results and adds representative L40 runs instead of duplicating the same A100 work.
+
+Primary observations include:
+
+- GPU cache hit and eviction behavior;
+- CPU cache-hit contribution;
+- recomputation avoided by CPU-tier reuse;
+- CPU-GPU transfer volume and non-overlapped restore stall;
+- TTFT and throughput;
+- active-request preemption, which must remain absent in the main reusable-cache pressure curve.
+
+Detailed designs and shared validity rules are maintained under `experiments/hierarchical-cache-value/`.
 
 ---
 
@@ -181,16 +188,18 @@ This is the final system-level validation. Earlier microbenchmarks and ablations
 
 ### 2.6 Model and hardware generalization
 
-**Question:** Which conclusions remain stable across modern model architectures and GPU platforms?
+**Question:** Which conclusions remain stable across modern model architectures and the two available GPU platforms?
 
 Representative matrix:
 
 | Model | A100 40GB | L40 48GB |
 |---|---:|---:|
-| Qwen3.5-9B | ✓ | ✓ |
-| Gemma 4 12B | ✓ | ✓ |
+| Qwen3.5-9B | representative results reused / validated | representative validation |
+| Gemma 4 12B | representative results reused / validated | representative validation |
 
-The full matrix is used only for representative configurations selected from the first five experiment groups. It is not necessary to repeat the complete experiment suite four times.
+The full 2 × 2 matrix is used only for representative configurations selected from the first five experiment groups. It is not necessary to repeat the complete experiment suite four times.
+
+A100 results already produced by earlier cross-model validation should be reused when the configuration is identical. Group 6 should add only the missing matched runs needed to complete the model × hardware comparison.
 
 The model dimension establishes cross-model robustness and relates measured cache/state behavior to observed performance. Differences between two models must not be interpreted as proof that attention architecture alone is the causal factor.
 
@@ -228,7 +237,8 @@ For every reported experiment:
 - repeat measurements when variance is non-negligible;
 - preserve failed or negative results when they affect interpretation;
 - distinguish measured facts from architectural explanations;
-- avoid causal claims that are not isolated by the experiment design.
+- avoid causal claims that are not isolated by the experiment design;
+- record runtime capability failures as `unsupported` or `partial` rather than silently substituting a different mechanism.
 
 ## 5. Scope discipline
 
