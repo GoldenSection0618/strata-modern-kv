@@ -170,15 +170,23 @@ TPOT 或等价 decode-latency metric 在需要解释 output-length / decode inte
 
 硬件比较同时保留两种语义。Same-workload comparison 使用相同 logical workload 观察真实 deployment-level bottleneck shift。只有当两个平台落入明显不同的 capacity / saturation region 时，才补充少量 matched-pressure controls 判断 mechanism 本身是否仍然成立。
 
-硬件比较不要求相同 absolute throughput。正式分析记录实际 GPU form factor、CPU-GPU topology、CPU/NUMA placement、host-memory policy、driver、CUDA/runtime 与 usable GPU memory budget。若两个 GPU 所在 host platform 不同，结论使用 platform-level comparison，不把全部差异归因于 GPU silicon。
+硬件比较不要求相同 absolute throughput。正式分析记录实际 GPU form factor、CPU-GPU topology、CPU/NUMA placement、host-memory policy、driver、CUDA/runtime、configured cache budgets 与 resolved per-state-group allocations。若两个 GPU 所在 host platform 不同，结论使用 platform-level comparison，不把全部差异归因于 GPU silicon。
 
 #### Experiment 3. End-to-End Generalization
 
 在最终冻结的少量 representative workloads 上完成 `2 models × 2 GPUs` 的交叉验证。
 
-主实验覆盖 Long-context reuse、Short-context control 与 Mixed workload，并在 Low / Medium / High operating regions 上以 Baseline 与 Full Configuration 作为主要 comparison pair。Mixed workload 同时报告 overall 与 request-class-level performance。
+主实验覆盖 Long-context reuse、Short-context control 与 Mixed workload。Primary system comparison 使用 Baseline 与一个预先冻结的 `common_full` configuration。
 
-主矩阵不重新执行完整 mechanism ablation。只有当 Full Configuration 出现异常收益、regression、throughput-latency trade-off、cross-class interference，或与 Experiments 1–2 的机制预测不一致时，才执行少量 targeted attribution runs。
+`common_full` 必须在四种 model × hardware 组合上保持相同 mechanism set 与经过验证的等价语义。某一组合无法支持该共同 feature set 时，该 primary matrix cell 标记为 `unsupported`，不能静默删减 mechanism 后继续使用 Full Configuration 名称。
+
+如果需要展示各组合自身能够运行的最佳配置，可以额外报告 `best_validated_configuration`，但该结果不进入 `common_full` 的跨组合 robustness conclusion。
+
+每个模型分别使用其 A100 Baseline 冻结 Low / Medium / High 三个 primary load points。对同一个模型，A100 与 L40 使用相同 frozen arrival schedules，保持 hardware same-workload comparison。不同模型之间不要求相同 requests/s，跨模型主要比较 normalized effect、实际 offered work 与 mechanism evidence。
+
+当 A100 与 L40 因 capacity / serving-capacity 差异落入明显不同的 pressure region 时，只增加少量 matched-pressure explanatory controls，并与 primary matrix 分开报告。
+
+主矩阵不重新执行完整 mechanism ablation。只有当 `common_full` 出现异常收益、regression、throughput-latency trade-off、cross-class interference，或与 Experiments 1–2 的机制预测不一致时，才执行少量 targeted attribution runs。
 
 代表性矩阵为：
 
@@ -196,11 +204,11 @@ Representative points 从前五组已经通过 validity gate 的结果中冻结�
 - representative operating boundary；
 - representative end-to-end workload when applicable。
 
-Selection rule 与 representative-point identifiers 必须在 generalization optimized results 生成前版本化冻结。不能在看到跨模型或跨硬件结果后反向替换验证点。
+Selection rule、representative-point identifiers、representative workload、load schedules 与 `common_full` feature-set identifier 必须在 generalization optimized results 生成前版本化冻结。不能在看到跨模型或跨硬件结果后反向替换验证点或改变共同配置。
 
-A100 上已经存在且 experiment contract 完全匹配的结果可以复用。若 tokenizer、runtime、cache/state budget、load definition、measurement boundary 或其他关键 comparison semantics 不同，则需要重新执行 matched run，不能仅根据模型/硬件名称复用。
+A100 上已经存在且 experiment contract 完全匹配的结果可以复用。若 tokenizer、runtime、cache/state allocation contract、load definition、measurement boundary 或其他关键 comparison semantics 不同，则需要重新执行 matched run，不能仅根据模型/硬件名称复用。
 
-详细设计位于 `experiments/model-hardware-generalization/`。Shared comparison conventions 与 Experiments 1–3 的详细设计均已完成。Measured generalization runs 仍需等待前置实验通过 validity gate，并在正式执行前冻结 representative points、representative workloads 与对应 execution contracts。
+详细设计位于 `experiments/model-hardware-generalization/`。Shared comparison conventions 与 Experiments 1–3 的详细设计均已完成。Measured generalization runs 仍需等待前置实验通过 validity gate，并在正式执行前冻结 representative points、representative workloads、load schedules、`common_full` 与对应 execution contracts。
 
 ## 3. Experimental dependency chain
 
@@ -232,6 +240,7 @@ I/O inefficiency 从哪里来，修复代价是多少？
 - precision / cache dtype；
 - workload identifier、token-length convention 与 exact trace configuration；
 - cache residency / state policy；
+- configured cache budgets 与 resolved per-state-group GPU/CPU allocation when applicable；
 - cache granularity controls；
 - I/O backend、host layout、write policy when applicable；
 - scheduler mechanism capability status；
@@ -249,10 +258,12 @@ Failed、negative、partial 和 unsupported results 不静默删除。
 
 - 不把 configured feature 当作已经验证的 capability。
 - 不把 cache hit 当作 end-to-end benefit 的充分证据。
+- 不把 configured cache size 当作 hybrid runtime 的实际总 allocation，必须以 resolved state-group allocation 为准。
 - 不把 transfer duration 与 computation time 直接相加，异步 overlap 必须单独处理。
 - 不把两个模型的差异解释为单一 architecture causal effect。
 - 不复制原论文中的 hardware/model-dependent threshold 作为现代平台默认参数。
 - 不在看到 optimized result 后反向选择更有利的 workload 或 boundary point。
+- 不允许跨组合比较中同名 Full Configuration 实际启用不同 mechanism set。
 - 不把相同 request rate 下 workload composition 或 output-length distribution 的变化解释为单一变量因果效应，除非同时控制 offered work / token volume 或提供 matched-load control。
 
 ## 6. Scope discipline
