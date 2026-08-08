@@ -41,6 +41,10 @@ Qwen3.5-9B 与 Gemma 4 12B 的 state composition 不假定一致。能够观测�
 
 `Full hierarchical hit` 只有在恢复了跳过对应 prefix computation 所需的全部 state group 时成立。只恢复部分 state 的情况标记为 partial hierarchy。
 
+当 runtime 为 attention KV、Mamba/recurrent state、SWA 等不同 state group 分别分配 GPU 或 CPU pool 时，实验必须记录 configured budget 与 resolved allocation。一个 aggregate `GPU reusable-state budget` 或 `CPU-tier budget` 不能替代 state-group-level allocation metadata。
+
+Configured `hicache-size`、`hicache-ratio` 或其他总量参数只表示配置意图。跨模型比较使用 runtime 实际解析后的 allocation、occupancy 与 state-group behavior 判断 pressure，不从单个配置值推断真实容量。
+
 ## 4. Model comparison rules
 
 Experiment 1 固定 A100 40GB，避免模型变量与硬件变量同时变化。
@@ -147,6 +151,8 @@ Paired comparison 必须冻结：
 如果 capability 只在某一模型或某一硬件组合上成立，则结果明确标记 capability boundary，不能把缺失实现解释为机制失效。
 
 Full Configuration 只有在其组成 mechanisms 均通过当前 model × platform combination 的 capability gate 时才进入 Experiment 3 主结果。
+
+对于 Qwen3.5，full hierarchy 必须同时验证 attention KV 与 recurrent/Gated-DeltaNet state。若 runtime 只恢复其中一类 state，则该 hierarchy capability 为 `partial`。
 
 ## 10. Repetition and uncertainty
 
