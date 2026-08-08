@@ -2,7 +2,7 @@
 
 > Last verified: 2026-08-09
 
-This document records volatile model-architecture, runtime, and hardware facts that affect experiment validity. Exact checkpoint revisions, runtime commits, drivers, CUDA versions, cache configuration, and feature status used by a reported run must still be recorded in that run's metadata.
+This document records volatile model-architecture, runtime, hardware, and project-environment facts that affect experiment validity. Exact checkpoint revisions, runtime commits, drivers, CUDA versions, cache configuration, and feature status used by a reported run must still be recorded in that run's metadata.
 
 ## 1. Model baseline
 
@@ -38,13 +38,35 @@ The A100 and L40 are the hardware available to this project, not claims about th
 
 Every I/O experiment must record the actual GPU form factor, PCIe / host topology, NUMA placement, CPU model, pinned-memory policy, driver, and CUDA runtime. Model name plus nominal GPU memory size is not sufficient metadata for bandwidth comparisons.
 
-## 3. Runtime roles
+## 3. Current cluster software constraints
 
-This project does not assume one serving runtime is optimal for every experiment group. Runtime selection follows the mechanism that must be measured.
+The currently inspected A100 node reports NVIDIA driver `525.60.13` and `nvidia-smi` CUDA compatibility `12.0`. Docker is not an allowed deployment path on this cluster.
 
-### 3.1 vLLM
+This matters because current serving-framework defaults have moved forward faster than the cluster driver/toolchain.
 
-vLLM is a candidate runtime for modern-model serving, prefix caching, state profiling, and CPU cache offloading where its pinned build passes the experiment-specific validation gate.
+### SGLang packaging constraint
+
+SGLang moved its default CUDA stack to CUDA 13 after the 0.5.10 generation. The project still maintains CUDA 12.x build paths, including CUDA 12.9 kernel/dependency handling in the current source tree.
+
+For this project, **default CUDA-13 SGLang packages/images are not an acceptable execution path on the current A100 node**. Before SGLang contributes reported results, the project must establish and pin a non-Docker CUDA-12-compatible installation, preferably a CUDA 12.9 path supported by the selected SGLang commit, and run the full runtime capability gate.
+
+The existence of CUDA 12.x build logic is not itself proof that every desired model/backend combination works on driver 525.60.13. Import, kernel load, server launch, HiCache direct/kernel I/O, and the target model all require explicit validation.
+
+### vLLM packaging constraint
+
+A current project attempt with the vLLM 0.26.0 PyPI package was not usable on this node because the installed vLLM native extension required `libcudart.so.13`, even when PyTorch was installed from a CUDA-12.x index.
+
+Therefore, vLLM 0.26.0 from the default PyPI path is **not a validated runtime baseline for this cluster**. A separately verified CUDA-12-compatible vLLM build would be required before using current vLLM features in measured experiments.
+
+These are project-environment constraints, not general claims that SGLang or vLLM cannot run on CUDA 12 systems.
+
+## 4. Runtime roles
+
+This project does not assume one serving runtime is optimal for every experiment group. Runtime selection follows the mechanism that must be measured and the build that can actually run on the cluster.
+
+### 4.1 vLLM
+
+vLLM remains a candidate runtime for modern-model serving, prefix caching, state profiling, and CPU cache offloading if a CUDA-12-compatible pinned build passes the experiment-specific validation gate.
 
 Current vLLM documentation exposes support for the model families used here and provides hybrid/Mamba-style cache management. Its CPU `OffloadingConnector` stores completed blocks in pinned host memory and transfers GPU↔CPU data with asynchronous DMA.
 
@@ -52,9 +74,9 @@ A critical granularity detail is that current vLLM can decouple prefix matching 
 
 Therefore, a vLLM experiment must not use the generic term `page size` unless the document identifies which concrete runtime granularity is being changed.
 
-### 3.2 SGLang HiCache
+### 4.2 SGLang HiCache
 
-SGLang HiCache is the primary mechanism candidate for the **Page Granularity and GPU-Assisted I/O** group because current SGLang exposes the controls needed to reproduce that causal chain directly:
+SGLang HiCache is the preferred **mechanism candidate**, subject to the CUDA-12 build gate above, for the **Page Granularity and GPU-Assisted I/O** group because current SGLang exposes the controls needed to reproduce that causal chain directly:
 
 - `--page-size`: number of tokens grouped into a KV cache page/block and used for storage/retrieval granularity;
 - `--hicache-io-backend direct`: standard CUDA memory-copy path;
@@ -68,22 +90,23 @@ SGLang HiCache and hybrid-model support continue to evolve. Model-serving suppor
 
 Do not rely on HiCache defaults. `page_size`, I/O backend, host layout, write policy, cache size, and scheduler/overlap settings must be explicitly pinned because defaults and supported paths can change across releases.
 
-## 4. Mandatory runtime validation gates
+## 5. Mandatory runtime validation gates
 
-### 4.1 General gate
+### 5.1 General gate
 
 Before a runtime contributes reported cache-reuse or offload results:
 
-1. The exact checkpoint revision and runtime model implementation must match the intended model.
-2. Prefix reuse must produce numerically consistent outputs with full recomputation for the tested text-only workload.
-3. GPU-resident and CPU-resident hits must be observable from runtime counters, events, or instrumentation rather than inferred from configuration alone.
-4. CPU-resident restore must cover every cache/state group required to skip the claimed recomputation.
-5. Cache policy, cache dtype, scheduler policy, and GPU cache budget must remain fixed across paired comparisons unless explicitly studied.
-6. A cache-pressure experiment must distinguish reusable-prefix eviction from active-request preemption.
+1. The environment imports and loads all required native extensions without unresolved CUDA dependencies.
+2. The exact checkpoint revision and runtime model implementation match the intended model.
+3. Prefix reuse produces numerically consistent outputs with full recomputation for the tested text-only workload.
+4. GPU-resident and CPU-resident hits are observable from runtime counters, events, or instrumentation rather than inferred from configuration alone.
+5. CPU-resident restore covers every cache/state group required to skip the claimed recomputation.
+6. Cache policy, cache dtype, scheduler policy, and GPU cache budget remain fixed across paired comparisons unless explicitly studied.
+7. A cache-pressure experiment distinguishes reusable-prefix eviction from active-request preemption.
 
-If any required state group cannot be verified, the affected result is labeled `unsupported` or `partial` rather than interpreted as a model property.
+If any required state group or native runtime path cannot be verified, the affected result is labeled `unsupported` or `partial` rather than interpreted as a model property.
 
-### 4.2 Qwen3.5 gate
+### 5.2 Qwen3.5 gate
 
 Validation must explicitly cover both:
 
@@ -92,11 +115,11 @@ Validation must explicitly cover both:
 
 A path that saves or restores only attention KV is a **partial hierarchy**, not a valid full Qwen3.5 hierarchical-cache result.
 
-### 4.3 Gemma 4 gate
+### 5.3 Gemma 4 gate
 
 Validation must cover the local/sliding-window and global-attention state groups actually retained by the pinned runtime.
 
-### 4.4 Page-granularity / GPU-I/O gate
+### 5.4 Page-granularity / GPU-I/O gate
 
 For the page-granularity experiment group:
 
@@ -106,8 +129,9 @@ For the page-granularity experiment group:
 4. Actual CPU→GPU payload bytes and transfer behavior must be observable. Configured page size is not a substitute for measured transfer granularity.
 5. CPU→GPU restore traffic and GPU→CPU backup/write-back traffic must be accounted separately.
 6. Hybrid-state tracking/checkpoint parameters must remain fixed or their required relationship to page size must be explicitly documented.
+7. Cross-page-size serving comparisons must control for page-size-dependent attention-kernel performance, preferably with a matched GPU-resident hit at each page size.
 
-## 5. Granularity terminology
+## 6. Granularity terminology
 
 `KV/state` is an umbrella term in this repository.
 
@@ -125,7 +149,7 @@ For the page-granularity experiment group:
 
 Whenever the runtime exposes a breakdown, state groups and granularity controls must be reported separately before an aggregate number is presented.
 
-## 6. Interpretation boundaries
+## 7. Interpretation boundaries
 
 The project must not assume that cache/state footprint grows linearly with context length for every state group.
 
@@ -137,7 +161,13 @@ CPU offloading must not be described as beneficial merely because it produces hi
 
 Likewise, GPU-assisted I/O must not be described as beneficial merely because raw bandwidth rises. The final claim requires accounting for GPU computation interference and end-to-end serving performance.
 
-## 7. Primary references
+A runtime feature documented upstream but not executable under the project's pinned cluster environment is a **candidate capability**, not an available experimental capability.
+
+## 8. Primary references
+
+### Original system
+
+- Strata, OSDI 2026: https://www.usenix.org/conference/osdi26/presentation/xie-zhiqiang
 
 ### Models
 
@@ -156,6 +186,7 @@ Likewise, GPU-assisted I/O must not be described as beneficial merely because ra
 - SGLang HiCache design: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/hicache_design.mdx
 - SGLang server arguments: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/server_arguments.mdx
 - SGLang attention-backend page-size notes: https://github.com/sgl-project/sglang/blob/main/docs/advanced_features/attention_backend.md
+- SGLang CUDA-default migration tracking: https://github.com/sgl-project/sglang/issues/21498
 
 ### Hardware
 
