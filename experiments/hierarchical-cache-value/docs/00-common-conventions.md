@@ -27,7 +27,7 @@ Unless an experiment explicitly changes a variable, the following remain fixed w
 - prefix lengths;
 - scheduler policy;
 - GPU cache budget;
-- CPU offload capacity and policy.
+- CPU offload capacity and policy for hierarchical runs.
 
 The workload trace must be versioned or deterministically reproducible from a recorded seed/configuration.
 
@@ -35,13 +35,19 @@ The workload trace must be versioned or deterministically reproducible from a re
 
 ### GPU-only
 
+Prefix caching remains enabled with the same cache/block/state policy used by the paired hierarchical run, but no CPU offload tier is enabled.
+
 Reusable state may remain in the GPU cache. Once reusable state is evicted from GPU, it is unavailable to later requests and the missing prefix state must be recomputed.
 
 ### GPU + CPU hierarchical
 
-The GPU budget is identical to the paired GPU-only run. Reusable state evicted from GPU may be retained in the validated CPU offload tier and restored on a later hit.
+The GPU budget, prefix-cache policy, block/state checkpointing mode, cache dtype, workload, and scheduler policy are identical to the paired GPU-only run. The intended architecture difference is that a validated CPU offload tier is enabled.
+
+Reusable state evicted from GPU may be retained in the CPU tier and restored on a later hit.
 
 The CPU tier must be large enough that CPU-capacity pressure is not an uncontrolled variable in Experiments 1–3. If CPU eviction occurs, it must be measured and the run must be labeled accordingly.
+
+The CPU offloading backend and its configuration remain pinned across all hierarchical runs that are compared with each other.
 
 ## 4. Hierarchy validity gate
 
@@ -52,7 +58,8 @@ Validation requires:
 - numerical consistency with recomputation;
 - observable GPU/CPU residency behavior;
 - per-state-group restore coverage where the runtime exposes multiple groups;
-- fixed offloading backend and cache policy across paired runs;
+- identical prefix-cache/block/cache-dtype/scheduler settings across paired GPU-only and hierarchical runs;
+- a pinned CPU offloading backend across hierarchical runs;
 - no silent fallback from restore to recomputation;
 - no active-request preemption caused by the cache-budget sweep.
 
