@@ -28,8 +28,10 @@ Metadata 至少包含：
 - serving runtime version / commit / build source；
 - system configuration；
 - precision 与 cache/state dtype；
-- GPU reusable-state budget；
-- CPU-tier budget when applicable；
+- configured GPU reusable-state budget；
+- configured CPU-tier budget when applicable；
+- resolved GPU allocation by observable state group；
+- resolved CPU allocation by observable state group when hierarchy is enabled；
 - workload family；
 - logical trace identifier；
 - tokenizer/materialized trace identifier；
@@ -49,12 +51,11 @@ Metadata 至少包含：
 Raw measurement payload 尽可能保留：
 
 - serving-state footprint by observable state group；
-- GPU/CPU state residency；
+- GPU/CPU state residency by state group；
 - cache/state hit volume；
-- eviction；
-- restore；
+- eviction / restore by state group when observable；
 - recomputation；
-- CPU-GPU transferred bytes；
+- CPU-GPU transferred bytes, separated by state group when observable；
 - transfer efficiency；
 - non-overlapped I/O stall；
 - delay-hit / redundant-work observables when supported；
@@ -67,6 +68,8 @@ Raw measurement payload 尽可能保留：
 - GPU utilization samples；
 - runtime errors and fallback events。
 
+Configured cache size and resolved allocation are different fields. A configured `hicache-size` or ratio must not be used as a substitute for actual per-state-group host allocation in hybrid-model analysis.
+
 ## Processed results
 
 Processed results 从 raw measurements deterministic 生成，并保留 source run identifiers。
@@ -78,7 +81,7 @@ Processed data 至少支持：
 - normalized gain / reduction；
 - run-to-run variability；
 - uncertainty summary；
-- state-pressure profile；
+- state-pressure profile based on resolved allocation/occupancy；
 - hierarchy effect summary；
 - I/O effect summary；
 - scheduler effect summary；
@@ -101,9 +104,10 @@ Cross-model Mechanism Generalization 至少形成：
 3. Reuse and I/O 场景下 hierarchy 与 I/O optimization 的 absolute 和 normalized effect；
 4. Locality and Scheduling 场景下 scheduler optimization 的 absolute 和 normalized effect；
 5. 两个模型的 actual token/work matching summary；
-6. full / partial hierarchy capability summary；
-7. mechanism-level observable 与 serving-level performance 的 evidence chain；
-8. cross-model mechanism matrix。
+6. configured budget 与 resolved per-state-group GPU/CPU allocation summary；
+7. full / partial hierarchy capability summary；
+8. mechanism-level observable 与 serving-level performance 的 evidence chain；
+9. cross-model mechanism matrix。
 
 核心 cross-model matrix 使用以下结构：
 
@@ -127,9 +131,10 @@ Cross-hardware Conclusion Stability 至少形成：
 3. `same_workload` comparison 下的 bottleneck location、pressure、mechanism observable 与 serving effect；
 4. 必要时的 `matched_pressure` control，以及实际 pressure-matching summary；
 5. GPU form factor、CPU-GPU topology、CPU/NUMA、host-memory policy、driver、CUDA/runtime 等 platform metadata summary；
-6. capacity / saturation boundary shift；
-7. unsupported / partial capability boundary；
-8. cross-hardware mechanism matrix。
+6. 两个平台 configured cache budget 与 resolved per-state-group allocation comparison；
+7. capacity / saturation boundary shift；
+8. unsupported / partial capability boundary；
+9. cross-hardware mechanism matrix。
 
 `same_workload` 与 `matched_pressure` 结果必须分开保存和绘图，不允许把两种 comparison semantics 混成一个平均值。
 
@@ -163,7 +168,8 @@ model × hardware × workload × load region × system configuration
 3. request completion time；
 4. GPU utilization；
 5. Full-vs-Baseline normalized effect；
-6. reuse realization、recomputation、CPU-GPU traffic、I/O stall 与 queueing evidence。
+6. reuse realization、recomputation、CPU-GPU traffic、I/O stall 与 queueing evidence；
+7. Full Configuration 的 effective state-group capability 与 resolved allocation summary。
 
 ### Short-context control
 
@@ -231,6 +237,8 @@ Final conclusion 使用 `stable_generalization`、`model_sensitive`、`hardware_
 如果 Full Configuration 提高 throughput 但稳定恶化 P99 TTFT 或 completion time，则结果标记为 `throughput_latency_tradeoff`，不写成无条件整体提升。
 
 如果某一模型、硬件或 mechanism 只支持 partial hierarchy，或无法验证目标 scheduler/I/O semantics，则对应 point 作为 capability boundary 报告，不进入完整 robustness comparison。
+
+If a hybrid runtime reports a configured host-cache budget that does not match resolved per-state-group allocation, analysis uses the resolved allocation and records the discrepancy explicitly.
 
 ## Figures and tables
 
