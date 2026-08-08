@@ -2,7 +2,7 @@
 
 本目录用于存放 “Cache Locality and Scheduler Behavior” 的实验结果。
 
-所有结果遵循 [`../docs/00-common-conventions.md`](../docs/00-common-conventions.md)，并保持以下可追溯结构：
+所有结果遵循 [`../docs/00-common-conventions.md`](../docs/00-common-conventions.md)，并保持：
 
 ```text
 raw measurements
@@ -14,98 +14,162 @@ figures and tables
 
 ## Raw results
 
-Raw results 保存每次 run 的原始测量输出与 metadata，不被处理脚本覆盖。
+Raw results 保存每次 run 的原始 measurement 与 metadata，不被处理脚本覆盖。
 
 Metadata 至少包含：
 
 - experiment ID；
-- model identifier 与 revision；
+- model identifier / revision；
 - hardware、driver、CUDA/runtime；
-- serving runtime version/commit；
-- precision 与 cache dtype；
+- serving runtime version / commit；
+- precision / cache dtype；
 - cache hierarchy / capacity / policy；
-- I/O backend；
+- hierarchy validation status；
+- I/O backend / host layout when applicable；
 - scheduler configuration；
+- mechanism capability status；
 - workload trace identifier；
-- locality condition；
+- cache-distance condition；
+- configured / observed reuse-distance summary；
 - request count；
 - context/prefix group summary；
-- configured and observed reuse-distance summary；
 - input/output length distribution；
+- theoretical reusable volume；
 - offered-load condition；
-- offered request rate；
-- achieved request rate；
+- offered / achieved request rate；
 - backlog/saturation status；
+- resolve mode；
+- configured / observed same-context fan-in when applicable；
+- observed cache resolve time when applicable；
 - repetition index；
-- validity status 与 invalid reason。
+- validity status / invalid reason。
 
-Raw measurement payload 至少尽可能保留：
+Raw payload 尽可能保留：
 
-- realized cache hit / reuse；
-- delay hit；
-- redundant prefill；
-- queueing delay；
-- I/O stall；
+- realized cache reuse / reuse realization；
+- delay hit / affected volume；
+- redundant prefill / recomputation；
+- GPU/CPU hit and restore events when applicable；
+- duplicate restore activity；
+- batch load / compute ratio；
+- loading-bound decisions；
+- bundle-hit count / volume；
+- queueing / deferral time；
+- non-overlapped I/O stall；
+- GPU idle / filled-bubble time / inserted-work type；
 - per-request TTFT；
-- completed-request / throughput accounting；
-- runtime errors、fallbacks 和异常 scheduler events。
+- TPOT or equivalent decode latency；
+- completion / throughput accounting；
+- runtime fallback、preemption、starvation 和异常 scheduler events。
+
+## Capability and validity status
+
+不同 capability status 分开保存与聚合。
+
+### `supported`
+
+目标 scheduler mechanism 与 cache/state path 的语义已经验证。
+
+### `partial`
+
+只能验证部分 hybrid state group 或部分 scheduler semantics。Partial result 可作为 capability evidence，但不能混入 full-mechanism performance curve。
+
+### `unsupported`
+
+当前 pinned runtime 无法建立所需机制或状态路径。Unsupported 是有效结果，不使用另一机制填补缺口。
+
+Invalid run 同样保留 raw data，并记录明确原因。
 
 ## Processed results
 
-Processed data 由脚本从 raw measurements deterministic 生成。
+Processed data 由脚本 deterministic 生成，并保留 run identifiers。
 
-处理过程保留 run identifiers，使任何 aggregation 都能回溯到原始 run。
+处理至少支持：
 
-任何过滤规则都记录明确 invalid reason，例如：
-
-- OOM；
-- workload trace mismatch；
-- scheduler configuration drift；
-- runtime fallback；
-- measurement failure；
-- initialization instability；
-- calibration mismatch。
-
-Processed data 至少支持：
-
-- locality → actual reuse-distance validation；
-- locality × load → delay hit；
-- locality × load → redundant prefill；
-- locality × load → queueing delay；
-- locality × load → I/O stall；
-- locality × load → TTFT distribution；
-- locality × load → achieved throughput；
-- offered vs achieved load comparison；
-- Experiment 2 representative workload selection。
+- configured condition → actual reuse-distance validation；
+- cache distance × load → delay hit / redundant work；
+- cache distance × load → host restore / I/O stall when valid；
+- offered vs achieved load；
+- TTFT / TPOT / throughput；
+- Experiment 2 W0–W3 frozen selection；
+- progressive scheduler ablation；
+- mechanism-level attribution；
+- Experiment 3 fan-in / cache-resolve analysis；
+- Experiment 4 operating-region classification / boundary validation。
 
 ## Experiment 1 outputs
 
-Locality × Arrival Rate Baseline Profiling 至少形成：
+至少形成：
 
-1. 三种 locality condition 的实际 reuse-distance distribution；
-2. locality × arrival rate 的 delay-hit surface；
-3. locality × arrival rate 的 redundant-prefill surface；
-4. queueing-delay / I/O-stall summary；
-5. TTFT median 与 tail-latency summary；
-6. achieved-throughput summary；
-7. offered vs achieved request-rate / saturation summary；
-8. representative workload selection table。
+1. Min/Shuffle/Max 的 actual reuse-distance distributions；
+2. cache distance × arrival rate 的 delay-hit / redundant-work surface；
+3. cache distance × arrival rate 的 host-restore / I/O-stall surface when hierarchy is valid；
+4. queueing summary；
+5. P50/P90/P99 TTFT summary；
+6. offered vs achieved throughput summary；
+7. W0–W3 representative workload selection table。
 
-Experiment 1 的主结果同时保留 scheduler-level pathology 与 user-visible performance，避免只凭单一指标判断 locality 或 load 的影响。
+### Representative workload table
 
-## Representative workload table
+使用与 Experiment 2 一致的命名：
 
-Experiment 2 使用的 workload points 从 Experiment 1 主结果中预先选择并冻结。
+| Point | Cache distance | Load | Dominant baseline pathology | Selection role | Source runs |
+|---|---|---|---|---|---|
+| W0 | ... | ... | weak | control | ... |
+| W1 | ... | ... | delay hit / redundant work | delay-hit-sensitive | ... |
+| W2 | ... | ... | host-loading imbalance | loading-balance-sensitive | ... |
+| W3 | ... | ... | residual I/O stall | stall-sensitive | ... |
 
-结果文件至少记录：
+某一角色在 baseline 中没有出现时记录 `not observed`，不人工挑选替代点。
 
-| Point | Locality | Load level | Key pathology | TTFT behavior | Throughput behavior | Selection role |
-|---|---|---|---|---|---|---|
-| C0 | ... | ... | weak | ... | ... | control |
-| L1 | ... | ... | locality-sensitive | ... | ... | locality case |
-| H1 | ... | ... | load-amplified | ... | ... | stress case |
+## Experiment 2 outputs
 
-最终 point 数量由 Experiment 1 结果决定，但 selection rule 必须在 Experiment 2 scheduler ablation 之前冻结。
+至少形成：
+
+1. W0–W3 的 S0→S3 progressive throughput / TTFT ablation；
+2. S0 vs S1 的 delay hit、deferral、redundant work、reuse realization；
+3. S1 vs S2 的 load/compute ratio、loading-bound fraction、bundle hits、exposed I/O stall；
+4. S2 vs S3 的 residual stall、GPU idle、filled-bubble time、inserted-work type；
+5. P50/P90/P99 TTFT + TPOT safety summary；
+6. targeted leave-one-out result when semantics permit；
+7. scheduler mechanism support / partial / unsupported table。
+
+## Experiment 3 outputs
+
+Cold-miss 主实验至少形成：
+
+1. C0–C3 observed fan-in 与 cache resolve time；
+2. fan-in → delay-hit / redundant-work / reuse-realization curve；
+3. S0 vs S1 vs S3 的 P50/P90/P99 TTFT 与 throughput；
+4. representative C3 burst timeline；
+5. cold-miss C3 vs gpu-ready C3 control。
+
+如果 full hierarchy 可验证，再单独增加：
+
+6. cold-miss vs cpu-restore C0/C3 comparison。
+
+Cold-miss、gpu-ready 与 cpu-restore 结果不得混在同一 residency category 中。
+
+## Experiment 4 outputs
+
+至少形成：
+
+1. delay-hit mechanism operating map；
+2. balanced-batching operating map；
+3. stall-hiding operating map；
+4. full-scheduler operating map；
+5. 4–6 个以内 frozen boundary points 的 validation；
+6. hot-context concurrency rule；
+7. final scheduler decision matrix。
+
+每个 workload point 至少分类为：
+
+- effective；
+- mechanism-only；
+- neutral；
+- regressive；
+- capacity-limited；
+- partial / unsupported。
 
 ## Figures and tables
 
@@ -120,13 +184,13 @@ processed dataset + processing commit/config
     ↓
 raw run identifiers
     ↓
-run metadata + workload/calibration identifiers
+run metadata + capability/workload/calibration identifiers
 ```
 
-所有 relative metrics 同时保留 underlying absolute measurements。
+所有 relative / normalized metrics 同时保留 underlying absolute measurements。
 
 ## Storage policy
 
 大体积 profiler dump、模型权重和可重新生成的大型中间文件不提交到 Git。
 
-需要长期保留的外部数据记录 external path/object identifier、checksum、generating run identifier、runtime/processing version 与 retention note。
+需要长期保留的外部数据记录：external path/object identifier、checksum、generating run identifier、runtime/processing version 与 retention note。
