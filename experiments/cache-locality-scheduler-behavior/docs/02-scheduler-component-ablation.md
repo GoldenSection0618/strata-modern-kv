@@ -2,220 +2,195 @@
 
 ## 1. 实验目标
 
-本实验用于分离 Strata 三类 scheduler optimization 在现代 hybrid LLM serving workload 中的实际贡献。
+本实验分离 Strata 三类 cache-aware scheduling mechanism 在现代 hybrid LLM serving workload 中的实际贡献。
 
-实验在 Experiment 1 已经定位出的 representative workloads 上，逐步加入 delay-hit mitigation、balanced batching 和 bubble filling / stall hiding，并观察 scheduler-level pathology 与端到端 serving performance 的变化。
+实验只在 Experiment 1 已经冻结的 representative workloads 上运行，不重新扫描完整 cache-distance × arrival-rate space。
 
-本实验主要回答三个问题：
+本实验主要回答：
 
-1. delay-hit mitigation 是否主要通过减少 delay hit 和 redundant prefill 获得收益；
-2. balanced batching 是否主要通过改善 computation 与 cache loading 的组合关系减少 loading-bound behavior；
-3. bubble filling / stall hiding 是否能够进一步利用不可避免的 I/O stall，并将 GPU idle time 转化为有效计算。
-
-本实验不重新扫描 Experiment 1 的完整 locality × arrival-rate 空间，而是在少量预先确定的 workload 上完成机制消融。
+1. delay-hit mitigation 是否通过等待尚未 resolve 的同-context miss，减少 redundant prefill / recomputation；
+2. balanced batching 是否通过改善 batch load / compute composition，降低 exposed host-loading stall；
+3. bubble filling / stall hiding 是否能够利用 balanced batching 后仍然存在的 I/O bubble，而不明显损害 decode-side QoS；
+4. 三个机制的收益是互补、重叠，还是已经被现代 runtime 的其他机制吸收。
 
 所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
 
-## 2. 实验设计原则
+## 2. Runtime capability gate
 
-本实验保持模型、硬件、cache hierarchy、cache capacity、I/O backend 和 workload trace 不变，只改变 scheduler mechanism。
+正式消融前必须确认当前 pinned runtime 能够实现与 Strata 三阶段机制语义等价的实验配置。
 
-Page granularity、GPU-assisted I/O、CPU cache capacity 和其他 data-plane optimization 不进入本实验 sweep。
+需要分别验证：
 
-所有 scheduler 配置使用同一个经过验证的 cache 与 I/O configuration，从而避免把 I/O backend 改善错误归因于 scheduler。
+- delay-hit configuration 确实能够识别“matching context 尚未 ready”的请求并 defer，而不是仅改变普通 FIFO priority；
+- balanced-batch configuration 确实依据 cache loading 与 compute requirement 影响 batch formation，并能够观测 loading-bound decision；
+- stall-hiding configuration 确实在 residual loading stall 中插入可重叠的有效工作，而不是简单提高全局 concurrency。
 
-实验主要在系统仍能稳定服务的负载区域进行。
+当前 upstream runtime 是否存在名称相同的 flag 不是充分条件。
 
-Experiment 1 中的 Overload workload 只作为补充诊断条件，不作为 scheduler 优化价值的主要证据，因为持续 backlog 本身会主导 queueing delay。
+如果某机制不能被独立切换或可靠 instrument，则该机制标记为 `unsupported`。Progressive ablation 只运行语义可验证的配置，不用相似 policy 静默替代。
 
-## 3. Representative workload 选择
+## 3. 固定 data path
 
-Experiment 2 不预先根据预期结果指定固定 workload，而是在 Experiment 1 完成后按照预先规定的规则选择 representative points。
+本实验只改变 scheduler mechanism。
 
-选择过程必须在运行任何 scheduler ablation 之前完成并冻结。
+以下条件在所有 paired comparison 中固定：
 
-至少选择以下四类 workload。
+- model / revision；
+- hardware；
+- cache hierarchy 与 capacity；
+- cache/page policy；
+- I/O backend；
+- host-memory layout；
+- request trace；
+- offered load；
+- token/batch limits。
 
-### W0: Control workload
+I/O backend 在运行任何 scheduler ablation 前冻结。
 
-选择 Experiment 1 中 scheduler pathology 较弱的稳定 workload。
+如果前一实验组已经得到一个通过 validation 的高效 I/O backend，可以将其作为本实验固定 data path，使 balanced batching / stall hiding 面对的是优化 I/O 后仍然暴露的 loading stall。如果只能验证 standard-copy path，则所有 scheduler configuration 都使用该 path，并把结论限定在该数据路径下。
 
-该 workload 应具有较低的 delay hit、redundant prefill 和 I/O stall，并且系统没有明显 queueing pressure。
+## 4. Representative workloads
 
-W0 用于检查 scheduler optimization 在“不需要优化”的情况下是否引入额外开销或 latency regression。
+Experiment 1 在 optimized scheduler 运行前冻结 W0–W3。
 
-### W1: Delay-hit-sensitive workload
+### W0: Control
 
-选择 Experiment 1 中 delay hit 和 redundant prefill 最明显，同时仍处于稳定服务区域的 workload。
+Baseline pathology 很弱且系统稳定。
 
-优先选择具有较强 locality、较短 reuse distance，并且多个相关请求容易在 cache 尚未 ready 时到达的 workload。
+W0 用于检查 scheduler overhead、queueing regression 和不必要的 request deferral。
 
-W1 主要用于评估 delay-hit mitigation。
+### W1: Delay-hit-sensitive
 
-### W2: Loading-balance-sensitive workload
+Baseline 中 delay hit / redundant prefill 明显。
 
-选择具有明显 CPU→GPU cache loading activity，并且 baseline 中存在较高 I/O stall，但 delay hit 不占主导的 workload。
+优先来自短 cache distance、较高但稳定的 arrival pressure，以及较高 same-context overlap 的 workload。
 
-该 workload 应具有足够的请求异质性，使不同请求之间存在不同的 loading/computation 组合机会。
+W1 主要用于验证 delay-hit mitigation。
 
-W2 主要用于评估 balanced batching。
+### W2: Loading-balance-sensitive
 
-### W3: Residual-stall-sensitive workload
+Baseline 中 CPU-resident restore / host loading 明显，batch 间 load/compute composition 具有差异，且 delay hit 不是 dominant pathology。
 
-选择 baseline 中存在明显 I/O stall、较高 stall variance 或 GPU idle interval 的 workload。
+W2 主要用于验证 balanced batching。
 
-W3 用于判断即使经过更合理的 batch formation，是否仍然存在无法通过 batching 消除的 loading bubble，以及 bubble filling 是否能够利用这些空闲区间。
+如果完整 CPU hierarchy 无法验证，则 W2 标记为 unavailable，而不是通过人工增加 transfer 制造替代结果。
 
-四个 workload 必须来自 Experiment 1 已经实际测量的 workload space。
+### W3: Residual-stall-sensitive
 
-每个 workload 保存对应的 Experiment 1 run identifier、locality condition、arrival-rate level、reuse-distance distribution 和选择依据。
+在固定 data path 与 baseline/balanced scheduling 下仍存在可观测 non-overlapped I/O stall 和 GPU idle interval。
 
-不得在看到 Experiment 2 的性能结果后重新选择更有利的 workload。
+W3 主要用于验证 bubble filling / stall hiding。
 
-## 4. 主消融配置
+如果没有找到 residual stall workload，则 stall-hiding operating region 可以直接收缩，不人为制造极端 workload。
 
-主实验使用四个 scheduler configuration。
+## 5. 主消融配置
+
+主实验使用 progressive sequence：
 
 | Configuration | Delay-hit mitigation | Balanced batching | Stall hiding |
 |---|---:|---:|---:|
 | S0 Baseline | × | × | × |
-| S1 Delay-hit | ✓ | × | × |
-| S2 Delay-hit + Balance | ✓ | ✓ | × |
+| S1 + Delay-hit | ✓ | × | × |
+| S2 + Balanced batch | ✓ | ✓ | × |
 | S3 Full scheduler | ✓ | ✓ | ✓ |
 
-该设计与三个机制的处理顺序保持一致。
+S0 → S1 测量 delay-hit mitigation 的增量。
 
-S0 → S1 用于观察 delay-hit mitigation 的增量效果。
+S1 → S2 测量 balanced batching 在 delay-hit candidates 已处理后的增量。
 
-S1 → S2 用于观察已经解决明显 delay-hit 后，balanced batching 能否进一步降低 loading-bound behavior。
+S2 → S3 测量 residual loading stall 上的 bubble-filling 增量。
 
-S2 → S3 用于观察经过 batch balancing 后剩余的 I/O stall 是否还能通过 bubble filling 被利用。
+S3 已经是完整 scheduler，不再额外设置一个重复的“complete scheduler”阶段。
 
-四个 configuration 在 W0–W3 上全部运行。
+在 W0–W3 都可用时，主矩阵为 4 workloads × 4 configurations = 16 conditions。某 workload role 不存在或某机制 unsupported 时，矩阵按 capability status 缩减，并显式记录原因。
 
-主实验因此包含 4 个 representative workloads × 4 个 scheduler configurations，共 16 个主要实验条件。
+## 6. Targeted attribution check
 
-## 5. 补充 leave-one-out 验证
+Progressive ablation 能够反映实际阶段顺序，但不能自动证明某个阶段具有完全独立的因果贡献。
 
-单纯依赖逐步加入机制存在 attribution 风险。
-
-某个机制的收益可能依赖前面的机制，因此 S1 → S2 或 S2 → S3 的增量不能完全等价于该组件自身的独立价值。
-
-本实验增加少量 targeted leave-one-out validation，但不进行完整三机制 factorial sweep。
-
-在对应机制最敏感的 representative workload 上补充：
+因此只在实现允许语义独立切换时增加 targeted leave-one-out：
 
 - Full − Delay-hit mitigation；
 - Full − Balanced batching；
 - Full − Stall hiding。
 
-每个 leave-one-out configuration 只在与该机制直接相关的一个或两个 workload 上运行。
+每种 leave-one-out 只运行在对应 mechanism 最敏感的一个或两个 representative workloads 上。
 
-该验证用于检查主消融中的机制归因，而不是形成第二套完整实验矩阵。
+如果实现中的阶段强耦合，关闭中间机制会改变后续机制语义，则不执行该 leave-one-out。此时 progressive ablation + mechanism instrumentation 是主要 attribution evidence。
 
-## 6. Workload 与运行条件
+## 7. Workload invariants
 
-每个 representative workload 使用 Experiment 1 中已经冻结的 request trace。
-
-同一个 workload 在不同 scheduler configuration 下保持以下条件一致：
+同一 W point 在不同 scheduler configuration 下保持：
 
 - request set；
-- request arrival timestamps；
+- exact arrival timestamps；
 - request ordering；
-- context / prefix distribution；
-- input length distribution；
-- output length distribution；
-- reuse opportunity；
-- reuse-distance structure。
+- context/prefix distribution；
+- input/output length distribution；
+- theoretical reuse opportunity；
+- reuse-distance structure；
+- cache initial state / residency mode。
 
-Scheduler 不得通过主动改变 offered workload 来获得性能优势。
+Scheduler 不得通过降低 offered load、丢弃请求或改变 token limit 获得表面 speedup。
 
-如果某个 scheduler configuration 改变了实际 admission rate、effective concurrency 或其他 workload condition，该变化必须被记录，并在结果解释中明确区分。
+实际 admission rate、effective concurrency、preemption 和 backlog 都写入 run metadata。
 
-## 7. 实验执行流程
+## 8. Delay-hit mitigation measurement
 
-### 第一阶段：Scheduler configuration validation
+重点记录：
 
-正式运行前验证四种 scheduler configuration 可以独立、稳定地启用。
-
-实验确认每个 configuration 只改变预期的 scheduler mechanism，不同时改变 cache policy、I/O backend、batch-size limit 或其他系统参数。
-
-实验确认关闭某个组件后不存在 silent fallback 到相似策略的情况。
-
-### 第二阶段：执行主消融实验
-
-依次在 W0、W1、W2 和 W3 上运行 S0–S3。
-
-每个 condition 进行多次独立重复测量。
-
-不同 scheduler configuration 的运行顺序采用交替或随机方式，避免机器长期状态变化系统性偏向某种 scheduler。
-
-每轮正式实验重新建立规定的 cache 初始状态和 workload state。
-
-所有 run 保存完整 configuration identifier 与 repetition index。
-
-### 第三阶段：执行 targeted leave-one-out
-
-根据预先确定的 workload-to-mechanism mapping，在对应 workload 上运行 Full-minus-component configuration。
-
-这一阶段只验证主实验的因果归因，不重新寻找新的最佳 workload。
-
-## 8. Delay-hit mitigation 观测设计
-
-Delay-hit mitigation 的核心评价不能只依赖 throughput。
-
-实验重点观察：
-
-- delay-hit event；
-- delay-hit affected request/token volume；
-- redundant prefill；
+- cache resolve time；
+- same-context overlap / fan-in；
+- delay-hit event / affected volume；
 - deferred request count；
-- deferred request waiting time；
-- realized cache reuse；
+- deferral waiting time；
+- redundant prefill / recomputation；
+- realized reuse；
 - queueing delay；
-- TTFT distribution；
+- TTFT；
 - throughput。
 
-核心证据链为：
+核心证据链：
 
 ```text
-delay-hit mitigation enabled
+delay-hit mitigation
         ↓
-fewer premature cache misses
+requests wait for matching unresolved context
         ↓
-lower redundant prefill
+fewer premature duplicate computations
         ↓
 higher realized reuse
         ↓
 TTFT / throughput change
 ```
 
-如果 S1 相对 S0 提高 throughput，但 delay hit 和 redundant prefill 基本没有变化，则不能直接把性能提升归因于 delay-hit mitigation 的预期机制。
+如果 S1 相对 S0 只改变 throughput，但 delay-hit / redundant-work 指标没有对应变化，则不能把收益归因于预期的 delay-hit mechanism。
 
-## 9. Balanced batching 观测设计
+## 9. Balanced batching measurement
 
-Balanced batching 的重点不是进一步提高 cache hit rate，而是改善一个 batch 中 computation 与 loading 的组合关系。
+Balanced batching 的目标不是降低 logical restore bytes，而是改善 loading 与 computation 的组合。
 
-实验重点观察：
+重点记录：
 
-- batch loading requirement；
-- batch computation amount；
+- per-request / per-batch load amount；
+- compute amount；
+- aggregated load / compute ratio；
 - loading-bound batch fraction；
-- cache-loading stall；
+- bundle-hit count / token volume；
+- host restore volume；
 - non-overlapped I/O stall；
+- queueing / deprioritization time；
 - GPU utilization；
-- queueing delay；
-- TTFT；
-- throughput。
+- TTFT / throughput。
 
-同时记录 request waiting behavior，检查为了构造更加平衡的 batch 是否导致部分请求被长期推迟。
+不复制 Strata 论文中的默认 load/compute threshold。该 threshold 是 hardware/model dependent，当前实现必须独立 calibration 或明确记录实际 fixed value 与选择依据。
 
-核心证据链为：
+核心证据链：
 
 ```text
-balanced batching enabled
+balanced batch formation
         ↓
-better loading / computation composition
+better load / compute composition + bundle hits
         ↓
 fewer severely loading-bound batches
         ↓
@@ -224,228 +199,150 @@ lower exposed I/O stall
 TTFT / throughput change
 ```
 
-Balanced batching 不要求显著减少 cache loading volume。
+Loading bytes 基本不变而 exposed stall 下降，仍然符合机制预期。
 
-如果 loading volume 基本相同，但 non-overlapped stall 明显下降，仍然属于符合机制预期的正结果。
+## 10. Bubble filling / stall hiding measurement
 
-## 10. Bubble filling / stall hiding 观测设计
+Bubble filling 只针对 S2 后仍然存在的 residual loading stall。
 
-Bubble filling 的作用对象是经过前两个机制后仍然存在的 residual loading stall。
-
-实验重点观察：
+重点记录：
 
 - residual I/O stall；
 - GPU idle interval；
-- successfully filled bubble time；
+- fill opportunity；
+- filled-bubble time；
+- inserted work type；
 - inserted useful computation；
 - GPU utilization；
-- prefill TTFT；
-- throughput；
-- decode latency / TPOT。
+- TTFT / throughput；
+- TPOT / decode latency；
+- scheduler-induced prefill deferral。
 
-由于 bubble filling 可能通过插入其他 work 利用等待时间，本实验同时观察 decode-side latency。
+如果实现使用 decode batch 填充 bubble，则必须检查 decode QoS。如果使用另一 prefill batch，则必须记录该选择，不能统一写成“decode insertion”。
 
-不能通过明显损害已有 decode request 的 latency 来换取更好的 aggregate throughput。
-
-核心证据链为：
+核心证据链：
 
 ```text
-residual loading stall
+residual loading-bound interval
         ↓
 bubble filling
         ↓
-useful computation during otherwise idle interval
+useful overlapping computation
         ↓
-lower exposed GPU idle time
+lower exposed GPU idle
         ↓
-throughput / TTFT change
+end-to-end change
 ```
 
-如果 S3 相对 S2 的 throughput 提升来自更高的有效计算占用，同时 residual exposed stall 减少，则能够支持 stall-hiding mechanism 的解释。
+## 11. Safety / fairness metrics
 
-## 11. 用户可见性能指标
-
-所有 configuration 统一报告：
-
-- throughput；
-- P50 TTFT；
-- P90 TTFT；
-- P99 TTFT；
-- queueing delay distribution；
-- TPOT 或等价 decode latency metric。
-
-平均 TTFT 不单独作为主要 latency 指标。
-
-Scheduler 可能改善平均吞吐但恶化部分请求等待，因此 tail latency 与 throughput 必须同时报告。
-
-## 12. Scheduler 安全性指标
-
-为了防止 scheduler 通过牺牲公平性获得表面性能提升，同时记录：
-
-- maximum request waiting time；
-- queue-age distribution；
-- starvation event；
-- achieved request rate；
-- effective concurrency；
-- active-request preemption。
-
-任何明显改变 workload admission 或导致 request starvation 的 configuration 均需要单独解释。
-
-## 13. 分析一：Delay-hit mitigation
-
-主要比较 S0 与 S1。
-
-重点分析 W1，同时使用 W0 作为 control。
-
-如果 W1 中 delay hit 和 redundant prefill 显著下降，并进一步改善 TTFT 或 throughput，而 W0 中收益很小，则说明 delay-hit mitigation 的收益具有明确 workload dependency。
-
-如果 W0 和 W1 都没有明显 delay hit，则不能仅根据 throughput 波动声称该机制有效。
-
-## 14. 分析二：Balanced batching
-
-主要比较 S1 与 S2。
-
-重点分析 W2。
-
-判断 balanced batching 是否减少 loading-bound batch 和 exposed I/O stall。
-
-同时检查 cache hit 和 transfer volume。
-
-如果 transfer volume 基本不变，而 I/O stall 和 TTFT 下降，则说明收益主要来自 scheduling overlap，而不是意外改变了 cache behavior。
-
-## 15. 分析三：Bubble filling
-
-主要比较 S2 与 S3。
-
-重点分析 W3。
-
-判断 residual I/O stall 是否被有效计算覆盖，以及 GPU idle time 是否下降。
-
-同时检查 decode latency，避免 throughput improvement 建立在明显恶化 decode QoS 的基础上。
-
-## 16. 分析四：完整 scheduler 的互补性
-
-最后比较 S0、S1、S2 和 S3。
-
-分析三个组件是基本独立、相互补充、收益高度重叠，还是存在负面 interaction。
-
-如果完整 scheduler 的收益主要由单个机制贡献，其余机制在现代 workload 中基本没有增量价值，则直接报告该结果。
-
-实验不要求三个机制都取得明显收益。
-
-## 17. Control workload regression 检查
-
-W0 是本实验不可删除的 control workload。
-
-如果 W0 本身不存在明显 delay hit、loading imbalance 或 I/O stall，则 scheduler optimization 理论上不应取得明显收益。
-
-实验重点检查：
-
-- TTFT 是否增加；
-- queueing 是否增加；
-- throughput 是否下降；
-- scheduler overhead 是否出现。
-
-如果优化机制在 W0 上造成明显 regression，则需要在最终 scheduler operating region 中明确排除这一 workload 区域。
-
-## 18. 结果组织
-
-本实验至少形成以下结果。
-
-### Figure A: Scheduler progressive ablation
-
-对 W0–W3 分别展示：
-
-```text
-Baseline
-→ + Delay-hit mitigation
-→ + Balanced batching
-→ + Stall hiding
-```
-
-并同时报告 throughput 与 TTFT 的变化。
-
-### Figure B: Mechanism-level attribution
-
-分别展示：
-
-- delay-hit mitigation → delay hit / redundant prefill；
-- balanced batching → loading-bound batch / I/O stall；
-- stall hiding → residual stall / GPU idle。
-
-该图用于建立 mechanism metric 与 end-to-end performance 之间的证据链。
-
-### Figure C: Latency safety
-
-展示各 scheduler configuration 下：
+所有 configuration 统一记录：
 
 - P50/P90/P99 TTFT；
-- TPOT；
-- queueing tail。
+- queueing-delay distribution；
+- maximum waiting time；
+- TPOT 或等价 decode latency；
+- starvation event；
+- active-request preemption；
+- offered / achieved request rate；
+- throughput。
 
-该图用于确认 throughput 收益没有建立在明显 latency regression 上。
+Scheduler 不能通过长期推迟某类请求换取更高 aggregate throughput 而不报告 tail-latency cost。
 
-### Workload × mechanism summary
+## 12. 实验执行流程
 
-最终形成：
+### Phase A: semantic validation
 
-| Workload | Dominant baseline pathology | Delay-hit mitigation | Balanced batching | Stall hiding | Full scheduler |
-|---|---|---|---|---|---|
-| W0 Control | weak | ... | ... | ... | ... |
-| W1 Delay-hit-sensitive | delay hit / redundant prefill | ... | ... | ... | ... |
-| W2 Loading-sensitive | loading imbalance | ... | ... | ... | ... |
-| W3 Stall-sensitive | residual I/O stall | ... | ... | ... | ... |
+验证 S0–S3 的实际机制差异和 instrumentation。
 
-表中的判断依据来自 mechanism metric 与 end-to-end metric，而不是单独根据 speedup 分类。
+### Phase B: main progressive ablation
 
-## 19. 结果判断逻辑
+在所有可用 W0–W3 上执行 S0–S3，多次重复并随机化运行顺序。
 
-### 情况 A：三种机制表现出清晰分工
+### Phase C: targeted attribution
 
-Delay-hit mitigation 主要降低 redundant prefill，balanced batching 主要降低 loading-bound stall，stall hiding 主要降低 residual GPU idle。
+仅在独立开关语义成立时运行 leave-one-out。
 
-完整 scheduler 获得进一步端到端收益。
+每个 run 保存 scheduler configuration、mechanism support status、workload identifier、repetition index 与 validity status。
 
-该结果说明三阶段 control-plane 设计在现代 workload 中仍然基本成立。
+## 13. 分析逻辑
 
-### 情况 B：只有部分机制仍然有效
+### Delay hit
 
-例如 delay-hit mitigation 仍然明显有效，但 balanced batching 或 stall hiding 增量很小。
+主要比较 W1 的 S0 vs S1，并用 W0 作为 control。
 
-该结果说明现代模型、runtime 或 I/O 系统已经改变 scheduler bottleneck 的组成。
+如果 W1 中 delay hit / redundant work 明显下降且端到端改善，而 W0 基本无变化，则支持 workload-dependent delay-hit mechanism。
 
-后续 Experiment 4 应缩小这些机制的有效 operating region，而不是继续把所有 scheduler optimization 视为同等重要。
+### Balanced batching
 
-### 情况 C：机制指标改善，但端到端收益有限
+主要比较 W2 的 S1 vs S2。
 
-Scheduler pathology 明显减少，但 TTFT 和 throughput 改善很小。
+如果 logical restore volume 接近，但 load/compute ratio、loading-bound fraction 和 exposed I/O stall 改善，则支持 scheduling overlap 解释。
 
-该结果说明这些 pathology 当前不是 dominant performance bottleneck。
+### Stall hiding
 
-不能仅根据内部指标改善声称 scheduler optimization 具有显著 serving value。
+主要比较 W3 的 S2 vs S3。
 
-### 情况 D：Full scheduler 出现负面 interaction
+如果 residual stall / GPU idle 被有效工作覆盖，同时 decode QoS 无明显 regression，则支持 bubble-filling mechanism。
 
-单独组件产生收益，但完整组合收益降低，或者 tail latency 恶化。
+### Full scheduler
 
-该结果说明不同 scheduler mechanism 之间存在 interaction，需要通过 leave-one-out result 定位冲突来源。
+比较 S0–S3 的总体趋势，并结合 targeted attribution 判断机制互补性。
 
-### 情况 E：所有 scheduler mechanism 收益都很弱
+完整 scheduler 不要求三个组件都在现代 workload 上取得明显收益。某一阶段接近 neutral 本身就是 operating-region 结论。
 
-W1–W3 中内部 pathology 与端到端性能都基本不变。
+## 14. Control regression
 
-该结果说明原系统所针对的 control-plane bottleneck 在当前现代 serving stack 中已经明显减弱。
+W0 不可删除。
 
-该结论本身构成有效实验结果。
+如果 W0 中不存在明显 delay hit、loading imbalance 或 residual stall，则 optimized scheduler 理论上不应得到大幅收益。
 
-## 20. 实验边界
+重点检查：
 
-Experiment 2 只研究 scheduler component attribution。
+- scheduler overhead；
+- unnecessary deferral；
+- queueing tail；
+- TTFT regression；
+- throughput regression。
 
-本实验不重新 sweep locality × arrival rate，不研究 extreme same-context concurrency，也不确定完整 scheduler 的全局 operating region。
+出现稳定 regression 时，该 workload 明确进入 Experiment 4 的 scheduler-not-recommended region。
 
-Locality × load 的完整基础空间已经由 Experiment 1 建立。
+## 15. 结果输出
 
-Same-context concurrency 由 Experiment 3 单独研究。
+至少形成：
 
-最终 workload-to-mechanism operating region 由 Experiment 4 综合 Experiments 1–3 得出。
+1. W0–W3 的 progressive S0→S3 throughput / TTFT ablation；
+2. delay-hit mitigation → delay hit / redundant work / reuse realization；
+3. balanced batching → load/compute ratio / bundle hit / exposed stall；
+4. stall hiding → residual stall / GPU idle / filled-bubble time；
+5. P50/P90/P99 TTFT + TPOT safety summary；
+6. targeted attribution table when supported；
+7. mechanism support / partial / unsupported table。
+
+## 16. 结果判断逻辑
+
+### A. 三阶段分工清晰
+
+三个阶段分别改善对应 pathology，并在 full scheduler 中形成互补收益。该结果支持 Strata-style control-plane design 在当前系统仍然成立。
+
+### B. 只有部分机制有效
+
+例如 delay-hit mitigation 有明显价值，而 balanced batching 或 stall hiding 接近 neutral。该结果说明现代 runtime 已改变 bottleneck composition。
+
+### C. Mechanism metric 改善但端到端收益有限
+
+该 pathology 存在，但不是 dominant serving bottleneck。不能只凭内部 metric 声称系统收益。
+
+### D. Full scheduler 出现负面 interaction
+
+单组件有效但 full configuration 增益下降或 tail latency 恶化。使用 targeted attribution / instrumentation 定位冲突，不隐藏结果。
+
+### E. 所有机制都很弱
+
+在有效 representative workloads 中内部 pathology 和端到端收益都接近 baseline。该结果说明 Strata 的 scheduler optimization space 在当前 stack 上明显收缩。
+
+## 17. 实验边界
+
+本实验只做 scheduler component attribution。
+
+完整 cache-distance × load surface 已由 Experiment 1 建立。Same-context concurrency 的专门压力测试由 Experiment 3 完成。最终 operating region 由 Experiment 4 综合形成。
