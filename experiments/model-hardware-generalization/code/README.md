@@ -14,7 +14,7 @@
 - relative state-pressure calibration；
 - relative serving-load / saturation calibration；
 - A100 / L40 same-workload orchestration；
--必要时的 matched-pressure control generation；
+- 必要时的 matched-pressure control generation；
 - baseline bottleneck profiling；
 - hierarchy / I/O / scheduler mechanism capability validation；
 - Baseline / Full Configuration end-to-end execution；
@@ -76,7 +76,7 @@ Experiment 3 的实现必须能够：
 10. 只在预定义触发条件满足时执行 targeted attribution runs，例如 abnormal gain、regression、throughput-latency trade-off、cross-class interference 或 mechanism prediction mismatch；
 11. Targeted attribution 只运行定位问题所需的最小中间 configuration set，不扩展成完整五配置笛卡尔积；
 12. same-workload main result 与必要的 matched-pressure explanatory control 分开保存；
-13. 输出最终 model × hardware robustness matrix，并支持 `stable_generalization`、`model_sensitive`、`hardware_sensitive`、`boundary_case`、`throughput_latency_tradeoff`、`cross_class_tradeoff`、`unsupported`、`inconclusive` 等分类。
+13. 输出最终 model × hardware robustness matrix，并支持 `stable_generalization`、`model_sensitive`、`hardware_sensitive`、`boundary_shifted`、`throughput_latency_tradeoff`、`cross_class_tradeoff`、`unsupported`、`inconclusive` 等分类。
 
 ## Runtime validation
 
