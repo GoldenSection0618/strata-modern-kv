@@ -2,7 +2,7 @@
 
 > Last verified: 2026-08-09
 
-This document records volatile model-architecture, runtime, hardware, and project-environment facts that affect experiment validity. Exact checkpoint revisions, runtime commits, drivers, CUDA versions, cache configuration, and feature status used by a reported run must still be recorded in that run's metadata.
+This document records volatile model-architecture, runtime, hardware, and project-environment facts that affect experiment validity. Every reported run must still record its exact checkpoint revision, runtime commit/version, driver, CUDA/runtime, cache configuration, scheduler configuration, and capability status.
 
 ## 1. Model baseline
 
@@ -10,19 +10,36 @@ This document records volatile model-architecture, runtime, hardware, and projec
 
 Primary checkpoint family: `Qwen/Qwen3.5-9B`.
 
-The language backbone has 32 layers arranged as eight repetitions of three Gated DeltaNet layers followed by one Gated Attention layer. The official model card reports a native context length of 262,144 tokens, with longer-context extension available separately.
+The official model card reports:
 
-For this project, Qwen3.5 is treated as a hybrid full-attention / recurrent-state model. Its serving state is not equivalent to the ordinary per-token KV cache of a uniform dense-attention model.
+- 9B parameters；
+- 32 language-model layers；
+- hidden layout `8 × (3 × Gated DeltaNet + 1 × Gated Attention)`；
+- native context length 262,144 tokens；
+- separately supported extension up to 1,010,000 tokens。
 
-Experiments use text-only requests unless an experiment explicitly states otherwise. Multimodal inputs are excluded so vision-side state and preprocessing do not become additional variables.
+The checkpoint config identifies the repeating layer types as `linear_attention` and `full_attention`.
+
+For this project, Qwen3.5 is therefore treated as a hybrid full-attention / recurrent-state model. Its serving state is not equivalent to the ordinary per-token KV cache of a uniform dense-attention transformer.
+
+Experiments use text-only requests unless explicitly stated otherwise.
 
 ### Gemma 4 12B Unified
 
-Primary serving checkpoint: `google/gemma-4-12B-it`. The corresponding base family is `google/gemma-4-12B`.
+Primary serving checkpoint: `google/gemma-4-12B-it`. Corresponding base family: `google/gemma-4-12B`.
 
-The official model card reports 48 layers, a 1,024-token local sliding window, and a 256K context length. The model interleaves local sliding-window attention with full global attention. Global layers use unified Keys and Values, so the cache layout must not be assumed to match a conventional dense-attention K/V pair.
+The official model card reports:
 
-Experiments also use text-only requests for Gemma 4 unless explicitly stated otherwise.
+- 11.95B parameters；
+- 48 layers；
+- 1,024-token local sliding window；
+- 256K context length；
+- hybrid attention interleaving local sliding-window attention and full global attention；
+- unified Keys and Values in global layers。
+
+The cache/state layout must therefore not be assumed to match a conventional uniform dense-attention K/V pair.
+
+Experiments use text-only requests unless explicitly stated otherwise.
 
 ## 2. Hardware baseline
 
@@ -34,136 +51,191 @@ Representative hardware-generalization platform:
 
 - NVIDIA L40 48GB.
 
-The A100 and L40 are the hardware available to this project, not claims about the newest GPU generation in 2026. The first five experiment groups use A100 as the default platform unless a design explicitly says otherwise. L40 is reserved mainly for representative hardware-generalization runs.
+These are the platforms available to this project, not claims about the newest GPU generation.
 
-Every I/O experiment must record the actual GPU form factor, PCIe / host topology, NUMA placement, CPU model, pinned-memory policy, driver, and CUDA runtime. Model name plus nominal GPU memory size is not sufficient metadata for bandwidth comparisons.
+The first five experiment groups use A100 as the default platform unless a design explicitly says otherwise. L40 is mainly reserved for representative hardware-generalization runs.
+
+Every I/O-sensitive run records the actual GPU form factor, PCIe/host topology, NUMA placement, CPU model, host-memory policy, driver, and CUDA runtime. GPU model plus nominal HBM size is insufficient metadata for bandwidth comparison.
 
 ## 3. Current cluster software constraints
 
-The currently inspected A100 node reports NVIDIA driver `525.60.13` and `nvidia-smi` CUDA compatibility `12.0`. Docker is not an allowed deployment path on this cluster.
+The inspected A100 node reports:
 
-This matters because current serving-framework defaults have moved forward faster than the cluster driver/toolchain.
+- NVIDIA driver `525.60.13`；
+- `nvidia-smi` CUDA compatibility `12.0`；
+- Docker deployment is not allowed。
 
-### SGLang packaging constraint
+These are project-environment facts and must not be generalized to other clusters.
 
-SGLang moved its default CUDA stack to CUDA 13 after the 0.5.10 generation. The project still maintains CUDA 12.x build paths, including CUDA 12.9 kernel/dependency handling in the current source tree.
+### 3.1 SGLang packaging status
 
-For this project, **default CUDA-13 SGLang packages/images are not an acceptable execution path on the current A100 node**. Before SGLang contributes reported results, the project must establish and pin a non-Docker CUDA-12-compatible installation, preferably a CUDA 12.9 path supported by the selected SGLang commit, and run the full runtime capability gate.
+SGLang v0.5.11 moved the default CUDA stack to CUDA 13.0 across SGLang, `sgl-kernel`, and default images. The upstream migration tracker explicitly states that CUDA 12.9 images/kernels remain maintained as a non-default path.
 
-The existence of CUDA 12.x build logic is not itself proof that every desired model/backend combination works on driver 525.60.13. Import, kernel load, server launch, HiCache direct/kernel I/O, and the target model all require explicit validation.
+Therefore:
 
-### vLLM packaging constraint
+- default CUDA-13 SGLang packages/images are not an acceptable execution path on the current A100 node；
+- a non-Docker CUDA-12-compatible installation must be selected and pinned；
+- the existence of a maintained CUDA-12.9 path does not prove that the project node, selected model, HiCache backend, or target kernels work correctly。
 
-A current project attempt with the vLLM 0.26.0 PyPI package was not usable on this node because the installed vLLM native extension required `libcudart.so.13`, even when PyTorch was installed from a CUDA-12.x index.
+Before SGLang contributes measured results, validation must cover import, native-kernel loading, server launch, target model execution, hierarchical-cache behavior, and any direct/kernel I/O path used by the experiment.
 
-Therefore, vLLM 0.26.0 from the default PyPI path is **not a validated runtime baseline for this cluster**. A separately verified CUDA-12-compatible vLLM build would be required before using current vLLM features in measured experiments.
+### 3.2 vLLM packaging status
 
-These are project-environment constraints, not general claims that SGLang or vLLM cannot run on CUDA 12 systems.
+The project previously attempted `vLLM 0.26.0` from the stable/default package path on this node and observed a native-extension dependency on `libcudart.so.13`. This is consistent with vLLM 0.26.0 documentation, which states that the stable 0.26.0 release ships CUDA-13-compatible binaries by default.
+
+This observation must be kept as a **cluster-specific failed baseline**, not generalized into “vLLM has no CUDA-12 path”.
+
+Current vLLM main-branch installation documentation again exposes CUDA 12.9 as a prebuilt/default development path and lists CUDA 12.8/13.0 variants. Because packaging policy has changed across releases, the project must pin an exact vLLM release/commit and wheel/build source rather than infer compatibility from the package name.
+
+For this project:
+
+- vLLM 0.26.0 default stable wheel is not a validated runtime on the current node；
+- an explicitly selected CUDA-12-compatible wheel/source build remains a candidate；
+- that candidate contributes no experimental result until native extensions, model execution, cache behavior, and required connectors pass validation。
 
 ## 4. Runtime roles
 
-This project does not assume one serving runtime is optimal for every experiment group. Runtime selection follows the mechanism that must be measured and the build that can actually run on the cluster.
+The project does not assume one serving engine is optimal for every experiment group.
+
+Runtime selection follows the mechanism being measured and the build that actually passes the current cluster capability gate.
 
 ### 4.1 vLLM
 
-vLLM remains a candidate runtime for modern-model serving, prefix caching, state profiling, and CPU cache offloading if a CUDA-12-compatible pinned build passes the experiment-specific validation gate.
+Current vLLM cache configuration exposes hybrid/Mamba-style cache controls, including separate physical cache-group sizing and `prefix_match_unit`.
 
-Current vLLM documentation exposes support for the model families used here and provides hybrid/Mamba-style cache management. Its CPU `OffloadingConnector` stores completed blocks in pinned host memory and transfers GPU↔CPU data with asynchronous DMA.
+`prefix_match_unit` is the finest token boundary at which prefix-cache hashes/hits can land. Current documentation explicitly allows it to be finer than physical KV cache blocks when divisibility requirements hold. It controls matching granularity, not how often states are stored.
 
-A critical granularity detail is that current vLLM can decouple prefix matching from physical cache storage. `prefix_match_unit` defines the finest token boundary for a prefix-cache hit and can be finer than a physical KV cache block. It controls matching granularity, not how often states are stored. Hybrid models also expose separate Mamba cache block/page parameters.
+The current `OffloadingConnector` extends prefix caching into pinned CPU memory. Completed GPU blocks can be copied into host memory and promoted back on demand; GPU↔CPU transfers use asynchronous DMA (`cudaMemcpyAsync`).
 
-Therefore, a vLLM experiment must not use the generic term `page size` unless the document identifies which concrete runtime granularity is being changed.
+Therefore a vLLM experiment must keep distinct:
+
+- prefix-match granularity；
+- physical attention block size；
+- recurrent/Mamba-style cache block or checkpoint granularity；
+- offload/transfer behavior；
+- observed actual transfer size。
+
+A generic `page size` label is not sufficient when these differ.
 
 ### 4.2 SGLang HiCache
 
-SGLang HiCache is the preferred **mechanism candidate**, subject to the CUDA-12 build gate above, for the **Page Granularity and GPU-Assisted I/O** group because current SGLang exposes the controls needed to reproduce that causal chain directly:
+SGLang HiCache remains the preferred mechanism candidate for the Page Granularity and GPU-Assisted I/O group, subject to the cluster build gate.
 
-- `--page-size`: number of tokens grouped into a KV cache page/block and used for storage/retrieval granularity;
-- `--hicache-io-backend direct`: standard CUDA memory-copy path;
-- `--hicache-io-backend kernel`: GPU-assisted I/O kernel path;
-- `--hicache-mem-layout`: host-memory layout;
-- `--hicache-write-policy`: host-tier backup/write-back policy.
+Current upstream server arguments expose, among others:
 
-Current SGLang documentation also notes that page-size support depends on the attention backend. Some backends only support fixed or restricted native page sizes. A page-size sweep must therefore keep the attention backend fixed and use only values supported by that same backend.
+- `--enable-hierarchical-cache`；
+- `--page-size`；
+- `--hicache-io-backend` with `direct` and `kernel` GPU paths；
+- `--hicache-mem-layout`；
+- `--hicache-write-policy`；
+- host-cache size/ratio controls。
 
-SGLang HiCache and hybrid-model support continue to evolve. Model-serving support alone is not evidence that hierarchical cache restore is correct for every state group. The exact pinned SGLang build must pass the full-state validation gate before serving-level results are interpreted.
+The HiCache design documentation describes `direct` as standard CUDA copy and `kernel` as GPU-assisted I/O.
 
-Do not rely on HiCache defaults. `page_size`, I/O backend, host layout, write policy, cache size, and scheduler/overlap settings must be explicitly pinned because defaults and supported paths can change across releases.
+Defaults and supported option sets have changed across SGLang revisions. The project therefore pins resolved values explicitly and does not rely on current/default documentation alone.
 
-## 5. Mandatory runtime validation gates
+Attention-backend support for page size and hybrid-state support must be validated on the exact selected commit.
 
-### 5.1 General gate
+## 5. Strata scheduler reference semantics
 
-Before a runtime contributes reported cache-reuse or offload results:
+Scheduler experiments use the Strata paper as the semantic reference, not whatever current upstream scheduler happens to call a similar feature.
 
-1. The environment imports and loads all required native extensions without unresolved CUDA dependencies.
-2. The exact checkpoint revision and runtime model implementation match the intended model.
+Strata §4.3 defines three stages:
+
+1. **Delay-hit deferral**. Requests matching a context whose initial miss is still unresolved are deferred until the cache becomes ready, reducing redundant computation.
+2. **Balanced batch formation**. After delay-hit candidates are handled, the scheduler uses load and compute requirements to avoid severely loading-bound prefill batches and preferentially exploit bundle hits when suitable.
+3. **Bubble filling / stall hiding**. If a batch remains loading-bound, useful work is inserted into the loading bubble. The paper uses decoding work as the main example and notes that prefill work can also be used in P-D-disaggregated settings.
+
+The paper uses a 100-token delay-hit threshold and a load/compute threshold of 100 in its own testbed. These are **historical implementation parameters**, not universal values. This project must calibrate or explicitly justify any threshold used on modern models/hardware.
+
+Current upstream SGLang/vLLM scheduler behavior must not be assumed semantically identical to these three Strata stages. Experiment 2 requires explicit mechanism-equivalence validation or a project implementation with independently controlled switches.
+
+## 6. Mandatory runtime validation gates
+
+### 6.1 General cache/state gate
+
+Before a runtime contributes reported cache-reuse/offload results:
+
+1. Required native extensions import and load without unresolved CUDA dependencies.
+2. Exact checkpoint revision and runtime model implementation are recorded.
 3. Prefix reuse produces numerically consistent outputs with full recomputation for the tested text-only workload.
-4. GPU-resident and CPU-resident hits are observable from runtime counters, events, or instrumentation rather than inferred from configuration alone.
+4. GPU-resident and CPU-resident hits are observable from counters/events/instrumentation rather than inferred from configuration alone.
 5. CPU-resident restore covers every cache/state group required to skip the claimed recomputation.
-6. Cache policy, cache dtype, scheduler policy, and GPU cache budget remain fixed across paired comparisons unless explicitly studied.
-7. A cache-pressure experiment distinguishes reusable-prefix eviction from active-request preemption.
+6. Cache policy, cache dtype, scheduler policy and GPU cache budget remain fixed across paired comparisons unless explicitly studied.
+7. Reusable-prefix eviction is distinguished from active-request preemption.
 
-If any required state group or native runtime path cannot be verified, the affected result is labeled `unsupported` or `partial` rather than interpreted as a model property.
+If required state or native runtime behavior cannot be verified, the affected result is labeled `partial` or `unsupported`.
 
-### 5.2 Qwen3.5 gate
+### 6.2 Qwen3.5 gate
 
-Validation must explicitly cover both:
+Validation must cover both:
 
-- full-attention KV;
-- Gated DeltaNet recurrent/state-cache data.
+- full-attention KV；
+- Gated DeltaNet recurrent/state-cache data。
 
-A path that saves or restores only attention KV is a **partial hierarchy**, not a valid full Qwen3.5 hierarchical-cache result.
+Restoring only attention KV is a partial hierarchy, not a full Qwen3.5 hierarchical-cache result.
 
-### 5.3 Gemma 4 gate
+### 6.3 Gemma 4 gate
 
 Validation must cover the local/sliding-window and global-attention state groups actually retained by the pinned runtime.
 
-### 5.4 Page-granularity / GPU-I/O gate
+### 6.4 Scheduler gate
 
-For the page-granularity experiment group:
+Before scheduler component attribution:
 
-1. All compared page sizes must be supported by the same attention backend.
-2. `direct` and `kernel` I/O must restore identical logical state and produce consistent model outputs.
-3. `hicache_mem_layout` and `hicache_write_policy` must be explicitly fixed across backend comparisons.
-4. Actual CPU→GPU payload bytes and transfer behavior must be observable. Configured page size is not a substitute for measured transfer granularity.
-5. CPU→GPU restore traffic and GPU→CPU backup/write-back traffic must be accounted separately.
-6. Hybrid-state tracking/checkpoint parameters must remain fixed or their required relationship to page size must be explicitly documented.
-7. Cross-page-size serving comparisons must control for page-size-dependent attention-kernel performance, preferably with a matched GPU-resident hit at each page size.
+1. Delay-hit events must be observable as unresolved same-context misses or an equivalent verified state transition.
+2. Delay-hit mitigation must be shown to defer those requests rather than merely alter generic priority.
+3. Balanced batching must expose or reconstruct the load/compute decision and loading-bound classification.
+4. Bundle-hit behavior must be observable or explicitly marked unsupported.
+5. Bubble filling must expose residual loading intervals and the useful work inserted into them.
+6. Component toggles must be semantically independent before leave-one-out ablation is used.
+7. If component isolation is impossible, progressive ablation plus instrumentation is used and the unsupported attribution is stated explicitly.
 
-## 6. Granularity terminology
+### 6.5 Page-granularity / GPU-I/O gate
 
-`KV/state` is an umbrella term in this repository.
+For page-granularity experiments:
 
-- `attention KV`: state retained by attention layers;
-- `local/sliding-window KV`: bounded attention state retained by local attention;
-- `recurrent state`: state retained by linear-attention or recurrent layers such as Qwen3.5 Gated DeltaNet;
-- `configured page size`: the tokens/page control of the selected runtime, when such a unified control exists;
-- `prefix-match granularity`: the finest boundary at which prefix reuse can be recognized;
-- `physical cache block size`: the runtime storage/allocation unit;
-- `offload / transfer granularity`: the logical or physical unit submitted to the host-transfer path;
-- `actual transfer size`: the payload observed from the runtime/profiler after batching, coalescing, or kernel processing;
-- `cache/state footprint`: runtime-observed memory allocated or resident for these structures;
-- `full hierarchical hit`: every state group needed to skip the corresponding prefix computation is restored;
-- `partial hierarchical hit`: only a subset of those state groups is restored.
+1. Compared page sizes use the same supported attention backend.
+2. `direct` and `kernel` restore identical logical state and produce consistent outputs.
+3. Host layout and write policy remain fixed across backend comparisons.
+4. Actual CPU→GPU payload bytes / transfer behavior are observable.
+5. CPU→GPU restore and GPU→CPU backup/write-back are accounted separately.
+6. Hybrid-state tracking/checkpoint parameters remain fixed or their page-size dependency is documented.
+7. Cross-page-size serving comparisons control page-size-dependent attention-kernel performance, preferably with matched GPU-resident-hit controls.
 
-Whenever the runtime exposes a breakdown, state groups and granularity controls must be reported separately before an aggregate number is presented.
+## 7. Granularity terminology
 
-## 7. Interpretation boundaries
+`KV/state` is an umbrella term.
 
-The project must not assume that cache/state footprint grows linearly with context length for every state group.
+- `attention KV`: state retained by attention layers；
+- `local/sliding-window KV`: bounded state retained by local attention；
+- `recurrent state`: state retained by linear-attention or recurrent layers such as Qwen3.5 Gated DeltaNet；
+- `configured page size`: runtime tokens/page control when such a unified control exists；
+- `prefix-match granularity`: finest boundary at which prefix reuse can be recognized；
+- `physical cache block size`: runtime storage/allocation unit；
+- `offload / transfer granularity`: unit submitted to host-transfer path；
+- `actual transfer size`: payload observed after batching/coalescing/kernel processing；
+- `cache resolve time`: interval from an unresolved miss being accepted until matching context becomes safely reusable；
+- `full hierarchical hit`: every state group needed to skip the corresponding prefix computation is restored；
+- `partial hierarchical hit`: only a subset is restored。
 
-Sliding-window attention can bound local KV retention. Recurrent-state layers can use checkpoint/state layouts whose scaling depends on runtime policy. Runtime allocation, block alignment, padding, checkpoint granularity, and cache dtype can all affect measured memory.
+State groups and distinct granularity controls are reported separately whenever the runtime exposes them.
 
-Cross-model differences may be associated with different cache/state behavior, but two-model comparisons do not isolate attention architecture as the sole causal factor.
+## 8. Interpretation boundaries
 
-CPU offloading must not be described as beneficial merely because it produces hits. A valid systems conclusion requires relating reuse to avoided recomputation, CPU-GPU transfer activity, non-overlapped stall, TTFT, and throughput.
+The project does not assume cache/state footprint grows linearly with context length for every state group.
 
-Likewise, GPU-assisted I/O must not be described as beneficial merely because raw bandwidth rises. The final claim requires accounting for GPU computation interference and end-to-end serving performance.
+Sliding-window attention can bound local KV retention. Recurrent-state layouts can scale according to checkpoint/runtime policy. Allocation alignment, padding, cache dtype and checkpoint granularity can affect observed memory.
 
-A runtime feature documented upstream but not executable under the project's pinned cluster environment is a **candidate capability**, not an available experimental capability.
+Cross-model differences may correlate with cache/state behavior but do not isolate attention architecture as the sole cause.
 
-## 8. Primary references
+CPU offloading is not beneficial merely because it produces hits. A valid systems conclusion requires avoided recomputation, transfer activity, non-overlapped stall and end-to-end metrics.
+
+GPU-assisted I/O is not beneficial merely because bandwidth rises. GPU compute interference and end-to-end serving performance must be included.
+
+A runtime feature documented upstream but not executable under this project’s pinned cluster environment is a candidate capability, not an available experimental capability.
+
+## 9. Primary references
 
 ### Original system
 
@@ -171,22 +243,24 @@ A runtime feature documented upstream but not executable under the project's pin
 
 ### Models
 
-- Qwen3.5 model card: https://huggingface.co/Qwen/Qwen3.5-9B
+- Qwen3.5-9B model card: https://huggingface.co/Qwen/Qwen3.5-9B
+- Qwen3.5-9B config: https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/config.json
 - Gemma 4 12B model card: https://huggingface.co/google/gemma-4-12B
 - Gemma 4 12B IT model card: https://huggingface.co/google/gemma-4-12B-it
 
 ### vLLM
 
-- vLLM cache configuration: https://docs.vllm.ai/en/latest/api/vllm/config/cache/
-- vLLM KV offloading guide: https://docs.vllm.ai/en/latest/features/kv_offloading_usage/
-- vLLM supported models: https://docs.vllm.ai/en/latest/models/supported_models/
+- Current cache configuration: https://docs.vllm.ai/en/latest/api/vllm/config/cache/
+- Current KV offloading guide: https://docs.vllm.ai/en/latest/features/kv_offloading_usage/
+- Current main-branch CUDA installation source: https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md
+- vLLM 0.26.0 release: https://github.com/vllm-project/vllm/releases/tag/v0.26.0
 
 ### SGLang
 
-- SGLang HiCache design: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/hicache_design.mdx
-- SGLang server arguments: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/server_arguments.mdx
-- SGLang attention-backend page-size notes: https://github.com/sgl-project/sglang/blob/main/docs/advanced_features/attention_backend.md
-- SGLang CUDA-default migration tracking: https://github.com/sgl-project/sglang/issues/21498
+- Current HiCache design: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/hicache_design.mdx
+- Current server arguments: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/server_arguments.mdx
+- v0.5.11 CUDA-13 migration release: https://github.com/sgl-project/sglang/releases/tag/v0.5.11
+- CUDA migration tracker: https://github.com/sgl-project/sglang/issues/21498
 
 ### Hardware
 
