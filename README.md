@@ -39,7 +39,7 @@ Detailed designs currently available:
 - [End-to-end serving](experiments/end-to-end-serving/)
 - [Model and hardware generalization](experiments/model-hardware-generalization/)
 
-The Model and Hardware Generalization directory now contains the shared comparison contract and the detailed design for Experiment 1, Cross-model Mechanism Generalization. Representative execution points are still frozen from validated results of the first five groups before measured generalization runs are started.
+The Model and Hardware Generalization group now has a shared comparison contract and detailed designs for all three experiments: Cross-model Mechanism Generalization, Cross-hardware Conclusion Stability, and End-to-End Generalization. Representative execution points and workloads must still be frozen from validated earlier results before measured generalization runs begin.
 
 ## Model and hardware baseline
 
@@ -58,7 +58,7 @@ Representative hardware-generalization platform:
 
 Qwen3.5 combines Gated DeltaNet recurrent/linear-attention layers with full-attention layers. Gemma 4 12B Unified combines local sliding-window attention with full global attention and unified Keys/Values in global layers. Their cache/state objects must not be treated as interchangeable ordinary dense-attention KV caches.
 
-The full model × hardware cross-product is reserved for representative generalization configurations rather than repeating every experiment four times. Earlier A100 cross-model results are reused when the configuration is identical.
+The full model × hardware cross-product is reserved for representative generalization configurations rather than repeating every experiment four times. Earlier A100 cross-model results are reused only when the full experiment contract is identical.
 
 Volatile architecture, runtime, hardware, cluster-software, granularity, and scheduler-semantics assumptions are maintained in [`docs/TECHNICAL_BASELINE.md`](docs/TECHNICAL_BASELINE.md). Exact checkpoint revisions, runtime versions/commits, resolved defaults, cache policies, scheduler mechanisms, and capability status must be pinned in every reported experiment.
 
@@ -76,6 +76,8 @@ The scheduler group uses Strata §4.3 as its mechanism reference. It separates s
 
 End-to-End Serving only composes mechanisms that have passed their corresponding capability and validity gates. Its five configurations are a comparison set, not a strictly monotonic feature chain. `Hierarchical Cache + I/O Optimization` and `Hierarchical Cache + Scheduler Optimization` are parallel attribution branches, while `Full Configuration` enables the validated hierarchy, I/O, and scheduler mechanisms together.
 
+Model and Hardware Generalization does not assume that generic runtime support for a model family implies support for the exact target checkpoint or for full hybrid-state caching/offload. Exact checkpoint launch, state coverage, I/O path, and scheduler semantics are validated on every model × platform combination before a result enters the robustness matrix.
+
 ## Repository policy
 
 The repository preserves a traceable experimental history. Published history on `main` must not be rewritten to hide earlier mistakes, and generated artifacts or model weights should not be committed directly.
@@ -86,13 +88,6 @@ See [`docs/REPOSITORY_RULES.md`](docs/REPOSITORY_RULES.md).
 
 Work in progress.
 
-Detailed experiment designs are currently specified for the first five groups and for Experiment 1 of Model and Hardware Generalization:
+Detailed experiment designs are now specified for all six evaluation groups, including all three Model and Hardware Generalization experiments.
 
-- Modern KV / State Bottleneck Profiling;
-- Hierarchical Cache Value Evaluation;
-- Page Granularity and GPU-Assisted I/O;
-- Cache Locality and Scheduler Behavior;
-- End-to-End Serving;
-- Cross-model Mechanism Generalization.
-
-Implementation, pinned-runtime validation, and measured results will be added incrementally. The remaining hardware-stability and final end-to-end generalization designs will be added after representative validation points and execution contracts are frozen.
+Implementation, pinned-runtime validation, representative-point freezing, and measured results will be added incrementally. The generalization experiments remain execution-gated by validated results from the earlier groups and by per-platform runtime/state capability checks.
