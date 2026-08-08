@@ -105,6 +105,8 @@ Full Configuration 只包含已经通过前置 capability / validity gate 的 me
 
 Mixed workload 必须同时保存 overall 与 request-class-level performance。Aggregate gain 不能掩盖 long-context 或 short-context class 的 material tail-latency regression。
 
+Short-context control 的 material-regression / equivalence rule 优先复用来源 End-to-End Serving 实验中已经冻结且语义完全匹配的判定规则。若 workload、runtime 或 measurement contract 已变化，则必须在查看 generalization optimized results 前重新版本化冻结 decision margin，不能事后决定“多大差异算 regression”。
+
 ## 7. Normalization
 
 每个模型和硬件组合都保留 absolute measurements。
@@ -178,12 +180,12 @@ Mechanism-level robustness 使用：
 - `boundary_case`：只有部分 operating region / combination 成立，或 boundary 明显移动；
 - `inconclusive`：测量精度、capability 或匹配条件不足以支持判断。
 
-Experiment 3 的 end-to-end summary 可以进一步使用：
+Experiment 3 的 end-to-end summary 使用：
 
 - `stable_generalization`；
 - `model_sensitive`；
 - `hardware_sensitive`；
-- `boundary_case`；
+- `boundary_shifted`；
 - `throughput_latency_tradeoff`；
 - `cross_class_tradeoff`；
 - `unsupported`；
