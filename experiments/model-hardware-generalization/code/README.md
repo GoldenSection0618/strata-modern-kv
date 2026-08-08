@@ -12,13 +12,15 @@
 - Qwen3.5-9B 与 Gemma 4 12B 的 matched workload generation；
 - tokenizer-aware token/work summary；
 - relative state-pressure calibration；
-- relative serving-load / saturation calibration；
+- per-model A100 Baseline load calibration 与 frozen arrival-schedule generation；
 - A100 / L40 same-workload orchestration；
 - 必要时的 matched-pressure control generation；
 - baseline bottleneck profiling；
 - hierarchy / I/O / scheduler mechanism capability validation；
 - configured cache budget 与 resolved per-state-group GPU/CPU allocation 采集；
-- Baseline / Full Configuration end-to-end execution；
+- frozen `common_full` feature-set validation；
+- Baseline / `common_full` end-to-end execution；
+- optional `best_validated_configuration` supplementary execution；
 - targeted attribution execution；
 - serving-state、cache、I/O、scheduler 与 serving metrics 采集；
 - mixed-workload request-class tagging 与 class-level metrics；
@@ -69,18 +71,22 @@ Experiment 3 的实现必须能够：
 
 1. 覆盖 Qwen3.5-9B / Gemma 4 12B × A100 40GB / L40 48GB 四种 model × hardware 组合；
 2. materialize Long-context reuse、Short-context control 与 Mixed workload 三类冻结的 representative workloads；
-3. 为每类 workload 建立 Low / Medium / High operating regions，并保存 calibration source；
-4. 对 primary matrix 只执行 Baseline 与 Full Configuration；
-5. 验证 Full Configuration 的每个组成 mechanism 在当前 model × platform 上均通过 capability gate；
-6. Mixed workload 为每条请求保存 request class，并分别统计 overall 与 long-context / short-context class-level performance；
-7. 同时保存 request throughput、token throughput、P50/P90/P99 TTFT、request completion time 与 GPU utilization；
-8. 保存 reuse realization、recomputation、CPU-GPU traffic、I/O stall、queueing、scheduler stall/idle 与必要 batch behavior，用于解释 end-to-end result；
-9. 保存 Full Configuration 下实际启用的 state groups 与其 resolved GPU/CPU allocations，避免把 capability/configuration difference 隐藏在统一名称下；
-10. 对每个 point 同时生成 absolute measurement 与 Full-vs-Baseline normalized effect；
-11. 只在预定义触发条件满足时执行 targeted attribution runs，例如 abnormal gain、regression、throughput-latency trade-off、cross-class interference 或 mechanism prediction mismatch；
-12. Targeted attribution 只运行定位问题所需的最小中间 configuration set，不扩展成完整五配置笛卡尔积；
-13. same-workload main result 与必要的 matched-pressure explanatory control 分开保存；
-14. 输出最终 model × hardware robustness matrix，并支持 `stable_generalization`、`model_sensitive`、`hardware_sensitive`、`boundary_shifted`、`throughput_latency_tradeoff`、`cross_class_tradeoff`、`unsupported`、`inconclusive` 等分类。
+3. 对每个模型使用 A100 Baseline 建立 Low / Medium / High 三个 primary load points，并在 optimized result 产生前冻结 exact arrival schedules；
+4. 对同一个模型在 A100 与 L40 上使用相同 frozen primary arrival schedules；
+5. 在 optimized result 产生前冻结 `common_full` mechanism set 和 feature-set identifier；
+6. 验证 `common_full` 的每个组成 mechanism 在四种 model × platform combination 上均通过 capability gate 或经过验证的语义等价 gate；
+7. 某一组合无法支持 `common_full` 时将该 primary matrix cell 标记为 `unsupported`，不得动态删减 feature set；
+8. 对 primary matrix 只执行 Baseline 与 `common_full`；
+9. Mixed workload 为每条请求保存 request class，并分别统计 overall 与 long-context / short-context class-level performance；
+10. 同时保存 request throughput、token throughput、P50/P90/P99 TTFT、request completion time 与 GPU utilization；
+11. 保存 reuse realization、recomputation、CPU-GPU traffic、I/O stall、queueing、scheduler stall/idle 与必要 batch behavior，用于解释 end-to-end result；
+12. 保存 `common_full` 下实际启用的 state groups 与 resolved GPU/CPU allocations；
+13. 对每个 point 同时生成 absolute measurement 与 `common_full`-vs-Baseline normalized effect；
+14. 只在预定义触发条件满足时执行 targeted attribution runs，例如 abnormal gain、regression、throughput-latency trade-off、cross-class interference 或 mechanism prediction mismatch；
+15. Targeted attribution 只运行定位问题所需的最小中间 configuration set，不扩展成完整五配置笛卡尔积；
+16. same-workload primary result 与必要的 matched-pressure explanatory control 分开保存；
+17. 可选的 `best_validated_configuration` 使用独立 comparison type，不进入 `common_full` primary aggregation；
+18. 输出最终 model × hardware robustness matrix，并支持 `stable_generalization`、`model_sensitive`、`hardware_sensitive`、`boundary_shifted`、`throughput_latency_tradeoff`、`cross_class_tradeoff`、`unsupported`、`inconclusive` 等分类。
 
 ## Runtime validation
 
@@ -96,11 +102,12 @@ Experiment 3 的实现必须能够：
 - Qwen3.5 的 attention KV 与 recurrent/Gated-DeltaNet state hierarchy 分别通过 restore / eviction / numerical-consistency checks；
 - I/O backend 的实际 path 与配置一致；
 - scheduler mechanism semantics 与前置实验冻结的定义一致；
-- Full Configuration 不包含当前组合未验证的 mechanism；
+- Experiment 3 `common_full` feature-set identifier 在四种组合中一致；
+- `common_full` 不包含当前组合未验证的 mechanism；
 - paired runs 未发生未记录的 fallback；
 - trace、cache/state budget、arrival/load rule 与 measurement boundary 与配置一致；
 - Experiment 2 的 comparison type 与 pressure-control rule 被正确记录；
-- Experiment 3 的 workload class、load region、request-class ratio 与 targeted-attribution trigger 被正确记录；
+- Experiment 3 的 per-model primary load calibration、frozen arrival schedule、workload class、request-class ratio 与 targeted-attribution trigger 被正确记录；
 - instrumentation failure 不会静默生成缺失指标。
 
 Validation result 必须写入 run metadata。
@@ -126,6 +133,7 @@ Validation result 必须写入 run metadata。
 - workload family；
 - representative-point / workload identifier；
 - pressure/load region；
+- primary load-calibration identifier when applicable；
 - offered request/token/work summary；
 - comparison type when applicable。
 
@@ -135,7 +143,7 @@ Validation result 必须写入 run metadata。
 
 - experiment ID；
 - representative-point / workload identifier；
-- comparison type: cross-model / same_workload / matched_pressure / end_to_end_primary / targeted_attribution；
+- comparison type: cross-model / same_workload / matched_pressure / end_to_end_primary / targeted_attribution / best_validated_supplementary；
 - model identifier 与 revision；
 - serving runtime version / commit / build source；
 - hardware platform 与 GPU form factor；
@@ -143,6 +151,7 @@ Validation result 必须写入 run metadata。
 - driver、CUDA/runtime 与 PyTorch build；
 - precision 与 cache/state dtype；
 - system configuration；
+- `common_full` feature-set identifier when applicable；
 - configured GPU reusable-state budget；
 - configured CPU-tier budget when applicable；
 - resolved GPU allocation by state group when observable；
@@ -150,6 +159,7 @@ Validation result 必须写入 run metadata。
 - trace identifier；
 - workload family 与 request-class composition when applicable；
 - pressure/load region 与 calibration identifier；
+- frozen arrival-schedule identifier when applicable；
 - offered request/token/work summary；
 - achieved request/token throughput；
 - cache/state initial condition；
@@ -166,6 +176,8 @@ Validation result 必须写入 run metadata。
 - Absolute measurements 与 normalized effects 同时保留。
 - Configured budget 与 resolved state-group allocation 不合并为同一个字段。
 - `same_workload` 与 `matched_pressure` 不混合 aggregation。
+- Experiment 3 primary matrix 只包含相同 `common_full` feature-set identifier 的 cells。
+- `best_validated_supplementary` 不进入 `common_full` robustness aggregation。
 - Cross-model comparison 必须保留 actual token/work summary。
 - Experiment 3 必须同时生成 overall 与 request-class-level mixed-workload aggregation。
 - Saturation / relative-pressure region 使用冻结的 calibration rule，不根据 optimized result 后验移动。
