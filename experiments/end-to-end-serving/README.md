@@ -14,7 +14,7 @@
 
 Load scaling 不单独拆成第四个实验，而作为三个实验中的统一控制维度。每个实验都覆盖从低负载到接近饱和的多个 offered-load 条件，用于观察优化在不同系统压力下的收益边界。
 
-目前已完成 Experiment 1 的详细方案设计。Experiments 2–3 的详细文档在对应方案确定后补充。
+目前已完成 Experiments 1–2 的详细方案设计。Experiment 3 的详细文档在对应方案确定后补充。
 
 ## Directory structure
 
@@ -23,7 +23,8 @@ end-to-end-serving/
 ├── README.md
 ├── docs/
 │   ├── 00-common-conventions.md
-│   └── 01-long-context-reuse-serving.md
+│   ├── 01-long-context-reuse-serving.md
+│   └── 02-short-context-serving.md
 ├── code/
 │   └── README.md
 └── results/
@@ -32,6 +33,7 @@ end-to-end-serving/
 
 - `docs/00-common-conventions.md`：统一系统配置、workload、负载、测量与结果判定口径。
 - `docs/01-long-context-reuse-serving.md`：Experiment 1 的详细实验方案。
+- `docs/02-short-context-serving.md`：Experiment 2 的 short-context regression 实验方案。
 - `code/`：workload trace、实验运行、指标采集、结果处理与绘图代码。
 - `results/`：raw measurements、processed data、统计结果、图表与结果摘要。
 
