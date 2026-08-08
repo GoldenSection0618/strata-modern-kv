@@ -61,6 +61,7 @@
 - Configured page size 不能替代 observed operation / transfer granularity。
 - HtoD restore 与 DtoH background traffic 分离。
 - Reference bandwidth 使用 matched host-memory condition，不直接使用 theoretical PCIe peak。
+- 每个 serving-level page-size point 同时生成 GPU-resident hit control 与 matched CPU-resident direct-restore run，用同 page-size pair 估计 restore-related penalty。
 
 ### Experiment 3
 
