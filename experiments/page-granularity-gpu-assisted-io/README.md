@@ -18,14 +18,14 @@ GPU computation interference and end-to-end benefit
 
 ## Scope
 
-这一部分计划包含四个实验：
+这一部分包含四个实验：
 
 1. **Page Size vs. Cache Reuse**：只改变 page size，验证小 page 是否提高有效 cache reuse，并确定收益开始趋于饱和的粒度区间。
 2. **Page Size vs. I/O Efficiency**：在相同 page-size sweep 下测量 actual transfer fragmentation、sustained host→GPU bandwidth、bandwidth utilization 与 serving-level I/O stall。
 3. **GPU-Assisted I/O Compensation**：在 Experiments 1–2 已确定的代表性 page-size operating points 上比较 baseline I/O 与 GPU-assisted I/O，验证其能否恢复 transfer efficiency、降低 non-overlapped I/O stall，并转化为实际 serving benefit。
-4. **GPU Compute Cost**：评估 GPU-assisted I/O 对 prefill、decode 和端到端 serving 的计算干扰与净收益。
+4. **GPU Compute Cost and Net Benefit**：评估 GPU-assisted I/O 对 prefill、decode 和完整 serving 的 GPU computation interference，并判断 I/O benefit 扣除 compute cost 后是否仍然具有正的 end-to-end net benefit。
 
-当前已完成 Experiments 1–3 的实验设计文档。Experiment 4 后续按同一目录继续补充。
+当前四个实验的设计文档均已完成。
 
 ## Directory structure
 
@@ -35,7 +35,8 @@ page-granularity-gpu-assisted-io/
 ├── docs/
 │   ├── 01-page-size-cache-reuse.md
 │   ├── 02-page-size-io-efficiency.md
-│   └── 03-gpu-assisted-io-compensation.md
+│   ├── 03-gpu-assisted-io-compensation.md
+│   └── 04-gpu-compute-cost-net-benefit.md
 ├── code/
 │   └── README.md
 └── results/
@@ -66,6 +67,8 @@ Experiment 2 分为 Controlled I/O experiment 与 Serving-level validation。前
 
 Experiment 3 不重新进行完整 page-size sweep，而是复用 Experiments 1–2 已确定的 large-page baseline、trade-off page 与 small-page fragmented region。它同样分为 Controlled I/O compensation 与 Serving-level validation，先验证 backend 对 transfer efficiency 的直接补偿，再验证 bandwidth recovery 是否能够降低 non-overlapped I/O stall 并改善 TTFT / throughput。
 
-Experiments 1–3 使用同一 page-size axis 和可对应的 representative operating points。联合分析需要同时观察 effective reuse、actual transfer granularity、bandwidth utilization、non-overlapped I/O stall 与 serving performance，从而判断 small page + GPU-assisted I/O 是否能够形成同时兼顾 reuse 与 I/O efficiency 的有效 operating region。
+Experiment 4 继续复用 Experiment 3 的 representative operating points 和 workloads，不重新扩展 page-size 或 workload sweep。它分为 Controlled GPU interference 与 End-to-End Net Benefit 两层，分别测量 prefill/decode slowdown，并将 compute cost 与 Experiment 3 已确认的 I/O stall reduction 放回同一 serving workload 中比较。
 
-本部分不预设更小 page 或 GPU-assisted I/O 一定更优。正式结论需要同时考虑 reuse benefit、I/O efficiency、GPU interference 与 end-to-end serving performance。
+Experiments 1–4 使用同一 page-size axis 和可对应的 representative operating points。联合分析需要同时观察 effective reuse、actual transfer granularity、bandwidth utilization、non-overlapped I/O stall、prefill/decode slowdown 与 end-to-end serving performance，从而判断 small page + GPU-assisted I/O 是否能够形成同时兼顾 reuse、I/O efficiency 与 GPU compute cost 的有效 operating region。
+
+本部分不预设更小 page 或 GPU-assisted I/O 一定更优。最终结果应区分 unnecessary、net-benefit 与 interference-limited operating regions，并给出 GPU-assisted I/O 的适用边界。
