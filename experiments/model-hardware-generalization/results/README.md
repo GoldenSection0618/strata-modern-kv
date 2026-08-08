@@ -27,6 +27,7 @@ Metadata 至少包含：
 - driver、CUDA/runtime 与 PyTorch build；
 - serving runtime version / commit / build source；
 - system configuration；
+- `common_full` feature-set identifier when applicable；
 - precision 与 cache/state dtype；
 - configured GPU reusable-state budget；
 - configured CPU-tier budget when applicable；
@@ -39,6 +40,7 @@ Metadata 至少包含：
 - reuse/locality summary；
 - request-class composition when applicable；
 - pressure/load region 与 calibration identifier；
+- frozen arrival-schedule identifier when applicable；
 - offered request/token/work summary；
 - achieved request throughput；
 - achieved token throughput；
@@ -77,7 +79,7 @@ Processed results 从 raw measurements deterministic 生成，并保留 source r
 Processed data 至少支持：
 
 - absolute baseline measurements；
-- absolute optimized / full measurements；
+- absolute optimized / `common_full` measurements；
 - normalized gain / reduction；
 - run-to-run variability；
 - uncertainty summary；
@@ -88,9 +90,10 @@ Processed data 至少支持：
 - model-level robustness comparison；
 - hardware/platform-level robustness comparison；
 - same-workload vs matched-pressure comparison；
-- end-to-end Baseline vs Full comparison；
+- end-to-end Baseline vs `common_full` comparison；
 - overall and request-class-level mixed-workload aggregation；
 - targeted-attribution result when triggered；
+- optional best-validated supplementary result；
 - final model × hardware robustness matrix。
 
 Invalid / partial / unsupported runs 不删除。主 aggregation 只包含满足对应 experiment validity requirements 的 runs。
@@ -154,10 +157,12 @@ Cross-hardware Conclusion Stability 至少形成：
 End-to-End Generalization 的 primary matrix 按以下维度组织：
 
 ```text
-model × hardware × workload × load region × system configuration
+model × hardware × workload × frozen per-model load point × system configuration
 ```
 
-其中 primary system configuration 只包含 Baseline 与 Full Configuration。
+Primary system configuration 只包含 Baseline 与同一个 `common_full` feature-set identifier。
+
+每个模型的 Low / Medium / High primary load schedules 由该模型的 A100 Baseline calibration 预先冻结。同一个模型在 A100 与 L40 上使用相同 schedule。不同模型的相同 region 标签不表示相同 absolute requests/s。
 
 ### Long-context reuse
 
@@ -167,15 +172,15 @@ model × hardware × workload × load region × system configuration
 2. P50/P90/P99 TTFT；
 3. request completion time；
 4. GPU utilization；
-5. Full-vs-Baseline normalized effect；
+5. `common_full`-vs-Baseline normalized effect；
 6. reuse realization、recomputation、CPU-GPU traffic、I/O stall 与 queueing evidence；
-7. Full Configuration 的 effective state-group capability 与 resolved allocation summary。
+7. `common_full` 的 effective state-group capability 与 resolved allocation summary。
 
 ### Short-context control
 
 至少形成：
 
-1. 四种组合的 Baseline vs Full throughput 与 latency；
+1. 四种组合的 Baseline vs `common_full` throughput 与 latency；
 2. low / medium / high load 下的 fixed-overhead / saturation-regression summary；
 3. material regression / no-material-regression / inconclusive 所需 absolute measurement、uncertainty 与预先冻结的 decision rule；
 4. 无效 CPU-tier activity、scheduler overhead 或其他 regression attribution evidence when observed。
@@ -191,6 +196,24 @@ model × hardware × workload × load region × system configuration
 5. reuse、queueing、I/O stall、scheduler/batch behavior 等解释指标。
 
 Aggregate performance 不能替代 request-class-level performance。Overall throughput improvement 如果伴随任一主要 request class 的 material tail-latency regression，必须报告为 `cross_class_tradeoff`。
+
+### Unsupported cells
+
+如果任一 model × hardware combination 无法执行冻结的 `common_full` feature set，则该 primary matrix cell 保存为 `unsupported`，并记录具体缺失 capability。
+
+不得使用删减 mechanism 后的配置填补该 cell，也不得将该删减配置继续命名为 `common_full`。
+
+### Best-validated supplementary results
+
+如果需要展示每个组合自身能够运行的最佳配置，可以单独生成 `best_validated_configuration` 结果。
+
+该结果必须使用独立 comparison type 与图表，不进入 `common_full` primary aggregation，也不能用于宣称同一 full-system configuration 跨四种组合泛化。
+
+### Matched-pressure controls
+
+当 frozen same-workload schedule 使 A100 与 L40 落入明显不同的 pressure region 时，可以生成少量 matched-pressure controls。
+
+Matched-pressure results 使用独立 identifiers，只解释 boundary shift，不进入 primary same-workload matrix。
 
 ### Targeted attribution
 
@@ -211,7 +234,7 @@ Targeted attribution 不与 primary matrix 混合 aggregation，也不能在看�
 
 Experiment 3 最终至少形成：
 
-| Model | GPU / Platform | Workload | Load region | Baseline | Full Configuration | Throughput gain | TTFT change | Mechanism evidence | Conclusion |
+| Model | GPU / Platform | Workload | Load point | Baseline | common_full | Throughput gain | TTFT change | Mechanism evidence | Conclusion |
 |---|---|---|---|---|---|---:|---:|---|---|
 | Qwen3.5-9B | A100 | Long | ... | ... | ... | ... | ... | ... | ... |
 | Qwen3.5-9B | L40 | Long | ... | ... | ... | ... | ... | ... | ... |
@@ -234,7 +257,7 @@ Final conclusion 使用 `stable_generalization`、`model_sensitive`、`hardware_
 
 如果 A100 与 L40 host platform 不同，结果只支持 platform-level generalization，不能从观测差异反推出 GPU silicon 的单因素因果效应。
 
-如果 Full Configuration 提高 throughput 但稳定恶化 P99 TTFT 或 completion time，则结果标记为 `throughput_latency_tradeoff`，不写成无条件整体提升。
+如果 `common_full` 提高 throughput 但稳定恶化 P99 TTFT 或 completion time，则结果标记为 `throughput_latency_tradeoff`，不写成无条件整体提升。
 
 如果某一模型、硬件或 mechanism 只支持 partial hierarchy，或无法验证目标 scheduler/I/O semantics，则对应 point 作为 capability boundary 报告，不进入完整 robustness comparison。
 
@@ -246,7 +269,7 @@ If a hybrid runtime reports a configured host-cache budget that does not match r
 
 所有 relative metrics 必须保留 underlying absolute measurements 与 uncertainty。
 
-`same_workload`、`matched_pressure`、`end_to_end_primary` 与 `targeted_attribution` 必须使用可区分的 labels / identifiers。
+`same_workload`、`matched_pressure`、`end_to_end_primary`、`best_validated_supplementary` 与 `targeted_attribution` 必须使用可区分的 labels / identifiers。
 
 正式结果必须能够追溯到：
 
