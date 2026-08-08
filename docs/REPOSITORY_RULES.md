@@ -85,6 +85,7 @@ Every experiment that contributes to a reported result should make it possible t
 - workload definition and exact token lengths;
 - relevant runtime configuration and feature flags;
 - cache-residency mode and cache/state policy;
+- configured cache budgets and, for hybrid runtimes, resolved GPU/CPU allocation by state group when observable;
 - all relevant cache granularity controls;
 - I/O backend, host-memory layout, and write policy when offloading is involved;
 - attention backend when it constrains page/block size or changes the measured kernel path;
@@ -97,6 +98,8 @@ A plotted number should be traceable back to raw measurements rather than being 
 Features whose behavior is experimental or rapidly changing in the serving runtime must be validated on the pinned version before their measurements are interpreted as model behavior.
 
 Do not rely on runtime defaults for a parameter that can affect the claim. If a default controls page size, cache layout, I/O backend, write policy, scheduler overlap, or another material mechanism, record the resolved value explicitly in run metadata.
+
+Generic model-family support is not enough when a claim depends on exact checkpoint behavior or hybrid-state support. Validate the exact checkpoint and every state group required by the claimed optimization.
 
 ## 6. Experimental integrity
 
@@ -114,7 +117,9 @@ Negative results are part of the project evidence when they materially affect a 
 
 A configuration change made after inspecting results must be recorded. Do not silently tune thresholds, cache policies, page sizes, I/O-kernel settings, or load points separately for different models in a way that changes the comparison question.
 
-Any regression/equivalence margin, representative-point selection rule, saturation rule, or workload-boundary rule used to support a claim should be frozen before inspecting the optimized comparison that it will judge.
+Any regression/equivalence margin, representative-point selection rule, saturation rule, workload-boundary rule, common feature set, or load schedule used to support a claim should be frozen before inspecting the optimized comparison that it will judge.
+
+For a cross-model or cross-hardware matrix, a configuration name must denote the same mechanism set and equivalent semantics in every cell used for that comparison. If one cell cannot support the frozen configuration, mark it `unsupported` or move the non-equivalent configuration to a separately labeled supplementary analysis. Do not silently remove a feature while keeping the same configuration label.
 
 ## 7. Generated and large files
 
@@ -150,6 +155,8 @@ When a result is used in a report or paper, preserve enough metadata to identify
 ## 9. Measurement semantics
 
 Do not replace measured runtime state footprint with a theoretical formula when the serving engine uses hybrid cache groups, allocator padding, checkpointing, or other implementation-specific layouts.
+
+A configured aggregate cache budget is not automatically the actual memory allocation of a hybrid runtime. When the runtime creates separate attention, recurrent/Mamba, SWA, or other state pools, retain both the configured control and the resolved per-state-group GPU/CPU allocation. Use the resolved allocation for capacity/pressure interpretation.
 
 Do not add raw transfer duration to computation time when asynchronous transfer overlaps with compute. A latency decomposition must distinguish transfer activity from non-overlapped I/O stall.
 
