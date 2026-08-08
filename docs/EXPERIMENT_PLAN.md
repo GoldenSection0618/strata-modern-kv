@@ -166,15 +166,19 @@ TPOT 或等价 decode-latency metric 在需要解释 output-length / decode inte
 
 #### Experiment 2. Cross-hardware Conclusion Stability
 
-固定模型与代表性 workload，在 A100 40GB 与 L40 48GB 上验证 bottleneck location、optimization direction 和 relative benefit 是否稳定。
+固定模型与冻结的 representative points，在 A100 40GB 与 L40 48GB 上验证 bottleneck location、optimization direction 和 relative benefit 是否稳定。
 
-硬件比较不要求相同 absolute throughput。正式分析同时记录实际 CPU-GPU topology、host-memory policy、driver、CUDA/runtime 与 usable GPU memory budget，避免把 GPU 型号本身当成完整硬件条件。
+硬件比较同时保留两种语义。Same-workload comparison 使用相同 logical workload 观察真实 deployment-level bottleneck shift。只有当两个平台落入明显不同的 capacity / saturation region 时，才补充少量 matched-pressure controls 判断 mechanism 本身是否仍然成立。
+
+硬件比较不要求相同 absolute throughput。正式分析记录实际 GPU form factor、CPU-GPU topology、CPU/NUMA placement、host-memory policy、driver、CUDA/runtime 与 usable GPU memory budget。若两个 GPU 所在 host platform 不同，结论使用 platform-level comparison，不把全部差异归因于 GPU silicon。
 
 #### Experiment 3. End-to-End Generalization
 
-在少量最终代表性 workload 上完成 `2 models × 2 GPUs` 的交叉验证。
+在最终冻结的少量 representative workloads 上完成 `2 models × 2 GPUs` 的交叉验证。
 
-该实验不重新进行 mechanism ablation，而是验证前两个实验建立的机制规律能否转化为稳定的 serving-level throughput 与 latency gain。
+主实验覆盖 Long-context reuse、Short-context control 与 Mixed workload，并在 Low / Medium / High operating regions 上以 Baseline 与 Full Configuration 作为主要 comparison pair。Mixed workload 同时报告 overall 与 request-class-level performance。
+
+主矩阵不重新执行完整 mechanism ablation。只有当 Full Configuration 出现异常收益、regression、throughput-latency trade-off、cross-class interference，或与 Experiments 1–2 的机制预测不一致时，才执行少量 targeted attribution runs。
 
 代表性矩阵为：
 
@@ -196,7 +200,7 @@ Selection rule 与 representative-point identifiers 必须在 generalization opt
 
 A100 上已经存在且 experiment contract 完全匹配的结果可以复用。若 tokenizer、runtime、cache/state budget、load definition、measurement boundary 或其他关键 comparison semantics 不同，则需要重新执行 matched run，不能仅根据模型/硬件名称复用。
 
-本组的实验目录已经建立在 `experiments/model-hardware-generalization/`。当前已完成 shared comparison conventions 与 Experiment 1 的详细设计。Experiments 2–3 在 representative execution points 与对应 execution contract 冻结后补充。
+详细设计位于 `experiments/model-hardware-generalization/`。Shared comparison conventions 与 Experiments 1–3 的详细设计均已完成。Measured generalization runs 仍需等待前置实验通过 validity gate，并在正式执行前冻结 representative points、representative workloads 与对应 execution contracts。
 
 ## 3. Experimental dependency chain
 
