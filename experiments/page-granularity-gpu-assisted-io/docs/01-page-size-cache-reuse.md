@@ -2,181 +2,238 @@
 
 ## 1. Objective
 
-本实验定量评估 page granularity 对 cache reuse 的影响，验证在现代模型与 serving workload 下，更小的 page 是否能够减少无效缓存与无效加载，从而提高实际可复用 token 的比例。
+本实验定量评估 cache page granularity 对 prefix reuse 的影响，验证在现代 serving workload 下，更小的 page 是否能够减少 page-boundary mismatch，从而提高实际避免重新 prefill 的 token 数量。
 
-本实验不以证明“page 越小越好”为目标，而是确定 page size 减小时 reuse benefit 是否稳定存在、收益主要出现在哪些 workload 中，以及收益从什么粒度开始趋于饱和。
+本实验不证明“page 越小越好”。实验目标是确定：
 
-实验最终需要给出一个 reuse-efficient page-size region，作为后续 I/O efficiency 实验的直接输入。
+- page size 减小时 effective reuse 是否稳定提高；
+- 收益出现在哪些 prefix pattern 中；
+- 收益在什么 page-size 区间开始趋于饱和；
+- capacity pressure 是否会改变这一趋势。
 
-## 2. Research questions
+实验输出的代表性 page-size region 进入 Experiment 2。
 
-本实验回答以下问题：
+所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
 
-1. page size 减小时，cache hit rate 是否提高；
-2. page size 减小时，实际避免重新 prefill 的有效复用 token 是否增加；
-3. 小 page 的收益是否主要来自减少 page 内部的无效 token；
-4. 不同 prefix overlap、context length 与 cache pressure 下，该趋势是否保持一致；
-5. page size 缩小到什么范围后，reuse benefit 开始明显趋于饱和。
+## 2. Primary causal question
 
-## 3. Independent variable
+本实验只建立：
 
-实验只系统改变 page size。
+```text
+configured page size
+        ↓
+prefix/page boundary alignment
+        ↓
+effective reused tokens
+```
 
-Page size 采用从小到大的多档设置，覆盖当前 serving runtime 实际能够支持的粒度范围。各档之间保持规则变化，使结果能够形成完整趋势曲线，而不是只比较两个端点。
+I/O bandwidth、GPU-assisted I/O 和 transfer stall 不属于本实验的主要因果变量。
 
-本实验统一使用同一种普通 I/O backend，不启用 GPU-assisted I/O。这样可以避免后续 I/O 优化改变 cache 行为或性能表现，从而保持 Experiment 1 对 page granularity 本身的隔离。
+## 3. Runtime and page-size gate
 
-## 4. Controlled variables
+主路径使用 SGLang 的 `--page-size`。
 
-同一组 page-size sweep 中保持以下条件不变：
+正式 sweep 前先完成 page-size capability scan。所有进入同一正式曲线的 page size 必须：
 
-- model 与 model revision；
+1. 由同一个 attention backend 支持；
+2. 使用相同 model revision、cache dtype 和 scheduler configuration；
+3. 对 hybrid model 满足 recurrent-state tracking/checkpoint 的对齐约束；
+4. 能通过 prefix-reuse correctness validation。
+
+不得为了获得更多 page-size 点而在不同点之间切换 attention backend。
+
+如果最终 runtime 将 prefix-match granularity 与 physical cache block 解耦，则本实验改为 sweep **reuse-matching granularity**，并在结果中使用该名称，而不是继续笼统称为 page size。
+
+## 4. Independent variable
+
+唯一主要自变量是 page size。
+
+Page-size candidates 在实现阶段根据目标 model × attention backend 的实际支持范围确定。候选值应覆盖从较细到较粗的多个有效粒度，并尽量保持规则间隔，以观察完整趋势而不是只比较两个端点。
+
+正式结果记录具体 tokens/page，不只记录 small / medium / large 标签。
+
+## 5. Primary isolation mode
+
+Experiment 1 的主要 reuse curve 使用 **warm GPU-resident reuse control** 或等价的无 CPU-restore 条件。
+
+该设计使 prefix reuse 已经可用，但不需要把 CPU→GPU transfer latency 混入 Experiment 1 的核心结论。此时重点记录“能够复用多少 token”，而不是“恢复这些 state 要花多少时间”。
+
+如果 runtime 无法构造稳定的 GPU-resident reuse control，可以使用已验证的等价 residency condition，但必须证明 page-size comparison 不因 CPU restore behavior 不同而改变 reuse accounting。
+
+## 6. Controlled variables
+
+同一 page-size sweep 中保持以下条件固定：
+
+- model 与 revision；
 - hardware；
-- serving runtime 与 runtime configuration；
-- precision；
-- cache capacity；
+- runtime commit；
+- attention backend；
+- precision 与 cache dtype；
+- GPU cache memory budget；
 - cache replacement / eviction policy；
-- scheduler configuration；
+- scheduler / overlap configuration；
 - I/O backend；
-- 请求集合与请求顺序；
+- host-memory layout 与 write policy，如果 HiCache 仍处于 enabled 状态；
+- hybrid/recurrent-state tracking parameters；
+- 请求集合和请求顺序；
 - context length；
 - output length；
 - prefix reuse pattern；
-- concurrency 或 request arrival condition；
+- concurrency / arrival condition；
 - random seed。
 
-不同 page size 必须使用同一份请求 trace。这样才能把 cache reuse 的变化主要归因于 page granularity。
+不同 page size 使用同一请求 trace。
 
-## 5. Workload design
+GPU cache capacity 以固定 memory budget 为主要控制口径。每个 run 同时记录 runtime 实际 token/state capacity 与 allocator padding，避免固定 page 数量导致不同 page size 获得不同总内存预算。
 
-实验使用三类 workload，分别覆盖可控复用、混合复用与无复用场景。
+## 7. Workload design
 
-### 5.1 Controlled prefix-reuse workload
+### 7.1 Controlled prefix-boundary workload
 
-该 workload 构造具有明确共享 prefix 的请求组，并系统设置不同程度的 prefix overlap。
+该 workload 构造具有明确共享 prefix 的请求组，并设置低、中、高三档 logically reusable prefix ratio。
 
-实验至少覆盖低、中、高三档 prefix overlap。不同 overlap 档位分别独立执行完整 page-size sweep。
+共享 prefix 的 cut points 必须包含与候选 page size **不完全对齐**的长度。如果所有 prefix length 都恰好是所有 page size 的共同倍数，实验会人为消除 page-boundary reuse loss。
 
-该 workload 用于建立 page size 与有效复用之间最直接的关系，并减少 request ordering、热点分布和其他复杂 workload 特征的干扰。
+每个 prefix condition 独立执行完整 page-size sweep。
 
-### 5.2 Mixed-reuse workload
+该 workload 是 Experiment 1 的主要机制证据。
 
-该 workload 包含多个不同 context。同一 context 会被重复访问，但不同请求具有不同程度的 prefix overlap。
+### 7.2 Mixed-reuse workload
 
-该 workload 用于模拟更接近实际 serving 的复用模式，验证 controlled workload 中观察到的 page-size trend 是否在不规则复用条件下仍然存在。
+该 workload 包含多个 context。不同请求具有不同 shared-prefix length，并按固定 trace 重复访问。
 
-Mixed-reuse workload 的请求集合和顺序在不同 page size 之间保持完全一致。
+该 workload 用于验证 controlled boundary experiment 的趋势是否在不规则 prefix distribution 下仍然成立。
 
-### 5.3 No-reuse control workload
+Mixed workload 不改变 cache locality/scheduler policy。这里研究 prefix boundary，不研究后续 scheduler group 的 locality effect。
 
-该 workload 中不同请求之间不存在可利用的共享 prefix。
+### 7.3 No-reuse control
 
-该 workload 作为负对照组，用于确认实验中观察到的 reuse 改善确实来自 page granularity 与共享状态的匹配关系，而不是 cache accounting、调度差异或其他系统噪声。
+不同请求之间不包含能够形成完整 reusable page 的共享 prefix。
 
-No-reuse workload 不承担寻找最佳 page size 的任务，其主要作用是验证测量链路与结论归因。
+该组作为负对照，用于验证 cache accounting 和 workload generator。如果 no-reuse 场景随 page size 出现类似于 shared-prefix workload 的大幅 effective-reuse improvement，应优先检查 trace、hash match 和指标实现。
 
-## 6. Context-length dimension
+## 8. Context-length dimension
 
-每类主要 workload 至少覆盖短、中、长三个 context 区间。
+主要 workload 覆盖短、中、长三个 context 区间。
 
-不同 context-length 档位保持相同的 prefix reuse pattern，使实验能够区分 page-size effect 是普遍存在，还是主要随着 context 增长而变得显著。
+不同 context-length 档位保持相同的 prefix-ratio definition 和 boundary-generation rule。
 
-中长 context 是本实验的重点，因为 page fragmentation 和无效 cache occupancy 在更大状态规模下更可能形成实际差异。
+Context length 是 robustness dimension，不与 page size 同时解释为双重主因。
 
-## 7. Cache-pressure dimension
+## 9. Cache-pressure robustness
 
-实验至少设置两种 cache pressure：
+主 reuse curve 在 capacity 相对充足的条件下完成，以减少 eviction 对 page-boundary effect 的干扰。
 
-1. cache capacity 相对充足；
-2. cache capacity 明显受限。
+随后增加一个受限 GPU cache budget 的 robustness condition，检查 page granularity 在容量压力下是否改变：
 
-容量相对充足的配置用于观察 page granularity 本身造成的复用损失。
+- actual cache occupancy；
+- reusable-state eviction；
+- effective reuse。
 
-容量受限的配置用于观察较大的 page 是否因为无效占用增加而进一步挤出真正有价值的 reusable state。
+该部分不进行完整 cache-capacity sweep，也不研究 hierarchical cache value。它只检查 page-size conclusion 是否依赖于近乎无限的 reusable-cache capacity。
 
-本实验不进行大规模 cache-capacity sweep。Cache pressure 只作为必要的 robustness dimension，避免把 Experiment 1 变成 eviction-policy 或 hierarchical-cache capacity 实验。
+如果 runtime 的 page size 只改变 prefix matching、不改变 physical allocation，则不得把这里的差异解释为“大 page 无效占用”。这种解释只能在实际 occupancy 数据支持时成立。
 
-## 8. Execution procedure
+## 10. Core metrics
 
-每个独立实验组由固定 model、hardware、workload、context length、prefix reuse condition 和 cache pressure 共同定义。
+### 10.1 Effective reused tokens
 
-在一个实验组内部依次执行所有 page-size 配置。
+实际避免重新执行 prefix prefill 的 token 数量。
 
-每个配置先执行统一 warm-up，再运行正式 workload。正式测量使用完全相同的请求 trace 与随机种子。
+这是本实验的核心绝对指标。
 
-每个配置进行多次重复运行。所有重复运行保留独立 raw result，不覆盖前一次结果。
+### 10.2 Reuse efficiency
 
-如果某次运行出现 runtime error、cache behavior 异常、请求 trace 不一致或其他违反实验不变量的情况，该运行标记为 invalid，并保留 invalid reason，而不是直接从结果目录删除。
+```text
+reuse efficiency = effective reused tokens / logically reusable prefix tokens
+```
 
-## 9. Metrics
+该指标直接量化 page boundary 造成的 reuse loss，并允许不同 prefix length 之间进行可解释比较。
 
-### 9.1 Cache hit rate
+### 10.3 Cache hit accounting
 
-Cache hit rate 用于描述请求所需 reusable state 中有多少能够直接命中已有 cache。
+记录 runtime page/block hit、matched prefix tokens 和 tier/residency information，用于验证 effective reuse 的来源。
 
-该指标不能单独作为 page-size benefit 的证据，因为较大 page 即使命中，也可能包含当前请求并不需要的大量数据。
+Page-level hit count 不能替代 effective reused tokens。
 
-### 9.2 Effective reused tokens
+### 10.4 Occupancy and eviction counters
 
-Effective reused tokens 统计实际通过 cache reuse 避免重新 prefill 的 token 数量。
+记录实际 cache bytes / token capacity、allocator padding、eviction 和 residency supporting counters。
 
-这是本实验的核心指标。它直接反映 page granularity 最终保留下来的有效计算复用，而不是只记录 page-level bookkeeping hit。
+这些指标用于解释 cache-pressure robustness，不作为主要 reuse 结论的替代指标。
 
-### 9.3 Cache utilization efficiency
+## 11. Execution procedure
 
-Cache utilization efficiency 衡量已缓存或已加载的数据中真正属于有效 reuse 的比例。
+每个实验单元由固定 model、hardware、runtime、attention backend、workload、context length、prefix condition 和 cache budget 定义。
 
-该指标用于识别较大 page 中由于边界不匹配产生的内部无效部分，并解释 page-level hit 与 token-level reuse 之间可能出现的差异。
+在实验单元内部：
 
-### 9.4 Supporting counters
+1. 初始化到规定 cache state；
+2. 执行统一 warm-up；
+3. 对所有 page-size candidates 运行相同 request trace；
+4. page-size 执行顺序进行随机化或平衡排列，避免温度、共享系统状态与单向 sweep 顺序相关；
+5. 每个配置重复多次；
+6. 每次 run 独立保存 raw result；
+7. runtime error、trace mismatch、unexpected eviction/preemption 或 correctness failure 记录为 invalid / unsupported，并保留 reason。
 
-实验同时保留必要的 cache occupancy、eviction 和 reusable-state accounting 信息，用于检查结果是否受到容量压力或异常 cache behavior 的影响。
+## 12. Analysis plan
 
-这些 supporting counters 用于解释核心指标，不替代核心指标本身。
+### Analysis A: Page size → effective reuse
 
-## 10. Analysis plan
+绘制 page size 与 effective reused tokens / reuse efficiency 的关系。
 
-第一步绘制 page size 与 effective reused tokens 的关系，观察 page size 减小时有效复用是否稳定增加，以及曲线在什么范围开始趋于平缓。
+判断 page size 变细是否稳定减少 boundary loss，以及收益何时开始趋于饱和。
 
-第二步联合分析 page size、cache hit rate 与 cache utilization efficiency，判断 reuse improvement 主要来自更多有效命中，还是来自减少 page 内部无效数据。
+### Analysis B: Prefix alignment sensitivity
 
-第三步分别比较不同 prefix overlap、context length 与 cache pressure 下的 page-size curve，判断结论的适用范围。
+比较不同 prefix ratio 和不同 boundary offset 下的曲线。
 
-第四步检查 no-reuse control workload。在不存在共享 prefix 的情况下，不应出现与共享复用相似的系统性 improvement。如果出现明显 improvement，需要优先检查测量口径、cache accounting 或其他未控制变量。
+目标是确认 page-size benefit 来自 boundary alignment，而不是某一组固定 prefix length 的偶然结果。
 
-第五步根据多组曲线确定 reuse-efficient page-size region。该区域应满足继续减小 page size 已不能带来显著额外 reuse benefit，而不是简单选择实验中最小的 page size。
+### Analysis C: Context robustness
 
-## 11. Expected result structure
+比较短、中、长 context 下的 normalized reuse efficiency。
 
-正式结果至少形成以下几类输出：
+绝对 reused tokens 与 normalized efficiency 同时保留，避免 normalization 隐藏实际规模差异。
 
-1. page size vs. effective reused tokens；
-2. page size vs. cache hit rate；
-3. page size vs. cache utilization efficiency；
-4. 不同 prefix overlap 下的对照；
-5. 不同 context length 下的对照；
-6. 不同 cache pressure 下的对照；
-7. no-reuse control；
-8. reuse-efficient page-size region 的总结表。
+### Analysis D: Cache-pressure robustness
 
-所有图表必须能够追溯到 processed data，再追溯到具体 raw runs 与完整配置。
+比较 capacity-sufficient 与 constrained 条件下的 occupancy、eviction 和 effective reuse。
 
-## 12. Interpretation boundary
+只有实际 occupancy / eviction 证据支持时，才讨论 page size 对 storage efficiency 的影响。
 
-如果小 page 显著提高 effective reused tokens，可以得出 page granularity 仍然影响现代 serving 中 cache reuse efficiency 的结论。
+### Analysis E: Negative control
 
-如果 page-level hit rate 提高但 effective reused tokens 没有同步提高，则不能把 hit-rate improvement 解释为实际 reuse benefit。
+No-reuse workload 不应表现出与共享-prefix场景类似的 reusable-token gain。
 
-如果收益只出现在高 prefix overlap、长 context 或高 cache pressure 下，应明确把结论限制在这些 workload 条件内。
+## 13. Selecting representative page-size regions
 
-如果 page size 缩小到某一区间后收益趋于饱和，该区间比“最小 page size”更适合作为后续实验输入。
+Experiment 1 不直接选择一个“最佳 page size”。
 
-本实验不判断小 page 是否具有更好的整体 serving performance，也不判断 GPU-assisted I/O 是否值得使用。这两个问题分别由后续 I/O efficiency 与 GPU-assisted I/O 实验回答。
+结果将 page-size space 划分为：
 
-## 13. Final conclusion target
+- **coarse / reuse-limited region**：page boundary 明显损失 logically reusable prefix；
+- **transition region**：继续减小 page 仍能获得明显 reuse improvement；
+- **reuse-saturated region**：继续减小 page 已很少增加 effective reuse。
 
-实验一最终应回答：
+Experiment 2 从这些区域选择代表性 points，并继续研究 I/O cost。
 
-> 在现代模型 serving 中，page size 减小时，有效 cache reuse 是否提高，提高多少，在什么 workload 下提高，以及收益从什么粒度开始趋于饱和。
+## 14. Interpretation boundaries
 
-Experiment 1 输出的 reuse-efficient page-size region 将直接进入 Experiment 2，用于继续验证这些更有利于 reuse 的 page granularity 是否同时造成更严重的 fragmented I/O 与 host→GPU bandwidth efficiency 下降。
+如果 page size 减小提高 effective reused tokens，可以得出 page granularity 影响 prefix reuse efficiency 的结论。
+
+不能仅凭 cache hit count 提高声称实际计算复用增加。
+
+不能在没有 occupancy evidence 时把 reuse improvement 解释为更高的 cache storage utilization。
+
+不能在本实验中根据 latency 或 bandwidth 推断 GPU-assisted I/O 的价值。
+
+如果目标 hybrid model 无法通过完整 state validation，则该模型的 serving-level reuse result 标记为 partial / unsupported，不以 attention-only hit 代替完整 hybrid-state reuse。
+
+## 15. Final conclusion target
+
+Experiment 1 最终回答：
+
+> 在固定 runtime、attention backend、cache budget 和 workload 下，page size 如何改变实际可利用的 prefix reuse，以及 reuse benefit 在什么 granularity 后开始饱和。
+
+该结果为 Experiment 2 提供需要进一步检查 I/O efficiency 的代表性 page-size region。
