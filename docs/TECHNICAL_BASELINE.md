@@ -62,7 +62,7 @@ Before any hierarchical-cache result is considered valid, the pinned runtime mus
 4. CPU-resident restore must cover every cache/state group required to skip the claimed recomputation.
 5. For Qwen3.5, validation must explicitly cover both full-attention KV and Gated DeltaNet recurrent/state-cache data. A path that offloads only the attention KV is a **partial hierarchy**, not a valid full Qwen3.5 hierarchical-cache result.
 6. For Gemma 4, validation must cover the local/sliding-window and global-attention cache groups actually retained by the pinned runtime.
-7. The selected prefix-cache policy, block/state checkpointing mode, cache dtype, and offloading backend must remain fixed across paired comparisons.
+7. Paired GPU-only and hierarchical runs must keep prefix-cache policy, block/state checkpointing mode, cache dtype, scheduler policy, and GPU cache budget fixed. The intended architecture difference is CPU-tier enablement. When a CPU offloading backend is used, its implementation and configuration must remain pinned across all hierarchical runs being compared.
 8. A cache-pressure experiment must distinguish reusable-prefix eviction from active-request preemption. Runs that change active-request feasibility or trigger scheduler preemption are not valid measurements of reusable-cache pressure unless preemption is explicitly the studied variable.
 
 If any required state group cannot be verified, the affected result must be labeled `unsupported` or `partial` rather than interpreted as a model property.
