@@ -161,9 +161,29 @@ Current upstream server arguments expose, among others:
 
 The current HiCache design documentation describes `direct` as standard CUDA-copy I/O and `kernel` as GPU-assisted I/O.
 
-Defaults and supported option sets have changed across SGLang revisions. The project therefore pins resolved values explicitly and does not rely on current/default documentation alone.
+Defaults and supported option sets have changed across SGLang revisions. The project therefore pins resolved values explicitly and does not rely on current/default documentation alone. The current code can also override a requested layout at runtime for some backend combinations, so command-line intent and effective configuration must both be recorded.
 
 Attention-backend support for page size and hybrid-state support must be validated on the exact selected commit. Model launch support is not equivalent to HiCache support for every state group required by that model.
+
+### 4.3 SGLang hybrid-state HiCache status
+
+Current SGLang code contains a hybrid cache assembly path and recent Qwen3.5 reports show separate hierarchical attention-KV and Mamba/recurrent host pools being allocated. Therefore full hybrid-state HiCache is an implemented **candidate path**, not a purely missing feature.
+
+It is not yet safe to treat that path as validated for this project. Recent upstream reports on larger Qwen3.5 hybrid models describe:
+
+- a `HiMambaRadixCache` transfer-path crash on first inference in an April 2026 main-branch environment;
+- `--hicache-size` allocating the requested amount separately to the KV host pool and the Mamba host pool in a v0.5.13 report, causing substantial host-memory over-allocation relative to the recurrent device state;
+- long stalls during Mamba eviction under large-context traffic in a v0.5.14 report.
+
+These reports use different Qwen3.5 variants and different hardware from this project's Qwen3.5-9B on A100/L40. They are capability warnings, not proof that the project's exact combination fails.
+
+For this project:
+
+- full Qwen3.5 hierarchy is claimed only after attention KV and recurrent/Gated-DeltaNet state both restore correctly on the exact pinned build;
+- actual GPU and CPU allocation must be recorded separately by observable state group, rather than inferred from a single aggregate `hicache-ratio` or `hicache-size` setting;
+- a configured `--hicache-size` value is not assumed to mean the same total host budget across hybrid state groups; the resolved per-group allocation is authoritative;
+- recurrent-state restore, eviction, transfer bytes, stall, and numerical consistency must be observed independently from attention-KV behavior;
+- if attention KV works but the recurrent-state hierarchy is unavailable or unreliable, the run is `partial` or `unsupported`, not a full hierarchical-cache result.
 
 ## 5. Strata scheduler reference semantics
 
@@ -192,6 +212,7 @@ Before a runtime contributes reported cache-reuse/offload results:
 5. CPU-resident restore covers every cache/state group required to skip the claimed recomputation.
 6. Cache policy, cache dtype, scheduler policy and GPU cache budget remain fixed across paired comparisons unless explicitly studied.
 7. Reusable-prefix eviction is distinguished from active-request preemption.
+8. When the runtime allocates separate cache/state groups, configured budgets and resolved GPU/CPU allocations are recorded per group when observable.
 
 If required state or native runtime behavior cannot be verified, the affected result is labeled `partial` or `unsupported`.
 
@@ -201,6 +222,8 @@ Validation must cover both:
 
 - full-attention KV;
 - Gated DeltaNet recurrent/state-cache data.
+
+For both state families, the project records actual device/host allocation, restore/eviction behavior, transferred bytes and numerical correctness when the runtime exposes them.
 
 Restoring only attention KV is a partial hierarchy, not a full Qwen3.5 hierarchical-cache result.
 
@@ -248,6 +271,8 @@ For page-granularity experiments:
 - `physical cache block size`: runtime storage/allocation unit;
 - `offload / transfer granularity`: unit submitted to host-transfer path;
 - `actual transfer size`: payload observed after batching/coalescing/kernel processing;
+- `configured host-cache budget`: requested host-memory control before runtime state-group expansion or override;
+- `resolved state-group allocation`: actual GPU/CPU memory allocated to each observable state group after runtime processing;
 - `cache resolve time`: interval from an unresolved miss being accepted until matching context becomes safely reusable;
 - `full hierarchical hit`: every state group needed to skip the corresponding prefix computation is restored;
 - `partial hierarchical hit`: only a subset is restored.
@@ -269,6 +294,8 @@ GPU-assisted I/O is not beneficial merely because bandwidth rises. GPU compute i
 A runtime feature documented upstream but not executable under this project's pinned cluster environment is a candidate capability, not an available experimental capability.
 
 Generic model-family support is likewise a candidate capability. Exact target-checkpoint support and the mechanism-specific state path must be separately verified.
+
+For hybrid runtimes, configured cache size is not automatically equivalent to actual total memory consumed. Resolved allocation by state group is part of the measured system state.
 
 ## 9. Primary references
 
@@ -299,8 +326,12 @@ Generic model-family support is likewise a candidate capability. Exact target-ch
 - Gemma 4 cookbook: https://docs.sglang.io/cookbook/autoregressive/Google/Gemma4
 - Current HiCache design: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/hicache_design.mdx
 - Current server arguments: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/server_arguments.mdx
+- Current hybrid-cache assembly code: https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/unified_radix_cache.py
 - v0.5.11 CUDA-13 migration release: https://github.com/sgl-project/sglang/releases/tag/v0.5.11
 - CUDA migration tracker: https://github.com/sgl-project/sglang/issues/21498
+- Qwen3.5 hybrid HiCache transfer-path warning: https://github.com/sgl-project/sglang/issues/24121
+- Qwen3.5 hybrid `hicache-size` allocation warning: https://github.com/sgl-project/sglang/issues/29034
+- Qwen3.5 Mamba eviction-stall warning: https://github.com/sgl-project/sglang/issues/30314
 
 ### CUDA compatibility
 
