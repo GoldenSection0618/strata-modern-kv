@@ -13,7 +13,7 @@
 3. **Prefix Reuse Scaling**：改变 prefix reuse 程度，判断 CPU restore 与 recomputation 的相对收益边界。
 4. **Cross-Model Validation**：在不同 hybrid attention/state 设计的模型上复验代表性配置，判断结论是否具有跨模型稳定性。
 
-当前首先完成 Experiment 1 的详细实验设计。后续实验在同一目录下继续补充，不重复建立新的顶层实验目录。
+当前已完成 Experiment 1 与 Experiment 2 的详细实验设计。后续实验继续在同一目录下补充，不重复建立新的顶层实验目录。
 
 ## Directory structure
 
@@ -21,7 +21,8 @@
 hierarchical-cache-value/
 ├── README.md
 ├── docs/
-│   └── 01-baseline-benefit.md
+│   ├── 01-baseline-benefit.md
+│   └── 02-gpu-cache-pressure-scaling.md
 ├── code/
 │   └── README.md
 └── results/
