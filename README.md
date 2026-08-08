@@ -6,7 +6,7 @@ Re-evaluating Strata's hierarchical context caching and scheduling mechanisms on
 
 This repository studies whether the bottlenecks and optimizations identified by Strata remain important for modern LLM serving systems, especially when the model no longer uses a uniform dense-attention KV cache.
 
-The project is not intended to reproduce every original figure mechanically. It preserves the main causal questions from Strata and redesigns the evaluation around modern models, available hardware, workloads, and cache/state representations.
+The project is not intended to reproduce every original figure mechanically. It preserves the main causal questions from Strata and redesigns the evaluation around modern models, available hardware, workloads, cache/state representations, and current serving-runtime constraints.
 
 ## Core questions
 
@@ -34,6 +34,7 @@ Detailed designs currently available:
 
 - [Modern KV / state bottleneck profiling](experiments/modern-kv-state-bottleneck/)
 - [Hierarchical cache value evaluation](experiments/hierarchical-cache-value/)
+- [Page granularity and GPU-assisted I/O](experiments/page-granularity-gpu-assisted-io/)
 
 ## Model and hardware baseline
 
@@ -54,9 +55,15 @@ Qwen3.5 combines Gated DeltaNet recurrent/linear-attention layers with full atte
 
 The full model × hardware cross-product is reserved for representative generalization configurations rather than repeating every experiment four times. Earlier A100 cross-model results are reused when the configuration is identical.
 
-Volatile architecture and runtime assumptions are recorded in [docs/TECHNICAL_BASELINE.md](docs/TECHNICAL_BASELINE.md). Exact checkpoint revisions, software versions, cache policies, and runtime capability status must be pinned in the metadata of every reported experiment.
+Volatile architecture, runtime, and cache-granularity assumptions are recorded in [docs/TECHNICAL_BASELINE.md](docs/TECHNICAL_BASELINE.md). Exact checkpoint revisions, software versions, runtime knobs, cache policies, and capability status must be pinned in every reported experiment.
 
-A configured CPU offload path is not automatically considered a valid full hierarchy. Hybrid-model experiments must first verify that every state group needed to skip the claimed recomputation is correctly restored.
+A configured offload path is not automatically considered a valid full hierarchy. Hybrid-model experiments must verify that every state group needed to skip the claimed recomputation is correctly restored.
+
+## Runtime discipline
+
+Runtime selection follows the mechanism being evaluated rather than assuming one engine is suitable for every experiment.
+
+The Page Granularity and GPU-Assisted I/O group currently targets SGLang HiCache as the primary mechanism path because it exposes an explicit page-size control and separate standard-copy versus GPU-assisted I/O backends. Any target model/runtime pair must still pass the experiment-specific validation gate before results are reported.
 
 ## Repository policy
 
@@ -68,9 +75,10 @@ See [docs/REPOSITORY_RULES.md](docs/REPOSITORY_RULES.md).
 
 Work in progress.
 
-The detailed experiment design is currently specified for:
+Detailed experiment designs are currently specified for the first three groups:
 
 - Modern KV / State Bottleneck Profiling;
-- Hierarchical Cache Value Evaluation.
+- Hierarchical Cache Value Evaluation;
+- Page Granularity and GPU-Assisted I/O.
 
-Implementation, pinned-runtime validation, and measured results will be added incrementally. The remaining experiment groups are still represented at the project-plan level and should receive experiment-specific designs before implementation begins.
+Implementation, pinned-runtime validation, and measured results will be added incrementally. Cache Locality and Scheduler Behavior, End-to-End Serving, and Model/Hardware Generalization are still represented at the project-plan level and should receive experiment-specific designs before implementation begins.
