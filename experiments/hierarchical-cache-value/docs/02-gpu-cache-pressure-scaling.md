@@ -2,174 +2,127 @@
 
 ## 1. 实验目标
 
-本实验用于研究 GPU HBM cache pressure 对 hierarchical cache 收益的影响，并确定 CPU tier 的价值是否只在显存极度紧张时出现，还是在常规高负载 serving 条件下已经能够产生稳定收益。
+本实验用于研究 GPU reusable-cache pressure 如何影响 hierarchical cache 的实际收益，并确定 CPU tier 的价值从什么容量压力区域开始出现。
 
-实验固定模型、workload 结构、prefix reuse 程度和请求负载，只系统改变 GPU 可用于 cache/state 的容量预算。
+实验固定模型、workload、prefix reuse、request ordering、serving load 和 scheduler policy，只系统改变 GPU 可用于 reusable cache/state 的容量预算。
 
 本实验主要回答三个问题：
 
-1. GPU cache 容量降低时，GPU-only 系统的 eviction 和 recomputation 如何变化；
-2. hierarchical cache 能否通过 CPU tier 吸收被 GPU 驱逐的可复用状态；
-3. hierarchical cache 的端到端收益从什么 cache pressure 区间开始出现，并在压力继续增大后如何变化。
+1. reusable GPU capacity 下降时，GPU eviction 与 recomputation 如何变化；
+2. hierarchical cache 能否通过 CPU tier 接管被驱逐但后续仍会 revisit 的状态；
+3. hierarchy 的 TTFT / throughput 收益是否存在清晰的 value-onset region，以及压力继续增加后收益是否受 transfer/stall 限制。
 
-本实验不用于研究 prefix reuse 本身的影响。Prefix reuse ratio 在本实验中保持固定，其独立作用留到 Experiment 3。
+所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
 
-## 2. 核心自变量
+## 2. 实验对象
 
-本实验唯一系统 sweep 的变量是 **GPU cache budget**。
+本实验在 Experiments 1–3 的 validated primary model 上执行完整 sweep，默认平台为 A100 40GB。
 
-GPU cache budget 从宽松状态逐步降低到明显不足状态，使实验覆盖从“GPU 本身足够容纳主要 working set”到“频繁发生 eviction”的完整区间。
+Experiment 2 不在两个模型上各自做完整 sweep。第二个模型只在 Experiment 4 进行少量 matched validation，从而避免与项目级 generalization 重复。
 
-建议至少设置四个压力等级：
+## 3. 核心自变量
 
-| Pressure level | GPU cache 状态 |
+本实验唯一系统 sweep 的变量是 **GPU reusable-cache budget**。
+
+在正式 sweep 前先执行 calibration，确定固定 serving load 在不发生 active-request preemption 时所需的最低运行容量。主实验只压缩该条件之上的 reusable-cache headroom。
+
+Pressure level 使用实际 GPU hit/eviction 行为验证，不仅根据配置的显存比例命名。
+
+主实验至少覆盖四个区域：
+
+| Pressure level | 实际系统状态 |
 |---|---|
-| Low | GPU cache 可以容纳绝大部分活跃 working set |
-| Medium | GPU cache 接近 working set 大小，开始出现稳定 eviction |
-| High | GPU cache 明显小于 working set，频繁发生 eviction |
-| Very High | GPU cache 只能保留少量近期状态，recomputation 或 CPU restore 成为常态 |
+| Low | reusable working set 基本能被 GPU 覆盖，eviction 很少 |
+| Medium | 开始出现稳定 reusable-state eviction |
+| High | GPU 明显无法覆盖 reusable working set，eviction 频繁 |
+| Very High | reusable state 高度竞争，但固定 active workload 仍无 preemption / OOM |
 
-具体容量数值不预先写死，而是在正式实验前根据两个模型的实际 cache/state footprint 和 workload working set 确定。
+Very High point 如果无法在不触发 active-request preemption 的情况下建立，则不强行保留。主曲线宁可停在 High，也不把 scheduler preemption 混入 reusable-cache pressure。
 
-各压力点需要形成明确的容量梯度，并保证能够观察到从低 eviction 到高 eviction 的连续变化。
+## 4. 对照配置
 
-## 3. 对照配置
+每一个 pressure point 都严格配对运行：
 
-每一个 GPU cache pressure point 都分别运行两种 cache architecture。
+- **GPU-only**；
+- **GPU + CPU hierarchical cache**。
 
-### GPU-only
+两种架构使用完全相同的 GPU cache budget、CPU-independent workload trace 和 serving load。
 
-系统只保留 GPU cache。
+Hierarchical 配置的 CPU tier 容量保持足够，使 CPU eviction 不成为第二个自变量。
 
-当 GPU cache 空间不足时，被淘汰状态直接失效。后续再次访问对应 prefix 时，需要重新计算缺失部分。
+## 5. Workload 设计
 
-### GPU + CPU hierarchical cache
+实验使用固定 shared-prefix workload。
 
-系统保持与 GPU-only 完全相同的 GPU cache budget，同时允许被 GPU 淘汰的可复用状态进入 CPU cache。
+请求由多个 prefix groups 构成。同一 group 内存在稳定 revisit，不同 group 之间保持独立。
 
-后续再次访问相同 prefix 时，系统可以从 CPU tier 恢复状态。
+Prefix length、prefix revisit fraction、reuse-distance pattern、request ordering、context/output distribution 和总请求数在所有 pressure point 中完全一致。
 
-因此每个 pressure point 都形成一组严格配对实验：
+Working set 需要足够大，使降低 reusable-cache budget 后能够从低 eviction 平滑进入高 eviction，但不能大到所有 pressure point 都直接处于 thrashing。
 
-```text
-GPU cache budget X
-├── GPU-only
-└── GPU + CPU hierarchical
-```
+Experiment 2 不改变 prefix reuse，也不改变 cache locality。
 
-这种设计保证观察到的差异来自 CPU hierarchy，而不是 GPU cache 容量不同。
+## 6. 初始状态
 
-## 4. Workload 设计
+主实验使用 **warm-cache steady-state**。
 
-实验使用固定的 shared-prefix workload。
+每轮先执行固定 cache-population trace，并验证实际 GPU/CPU cache occupancy。随后进入正式测量阶段。
 
-请求由多个 prefix groups 构成，同一 group 内存在稳定的 prefix reuse，不同 group 之间保持独立。
+Cold-cache 不做完整 pressure sweep，因为 Experiment 1 已经单独研究 initial-state effect。可以保留一个代表性 cold-cache sanity check，但不进入主曲线。
 
-整个请求集合的 active working set 需要大于最低几个 GPU cache budget，使高压力配置能够稳定产生 eviction。
+## 7. Validity conditions
 
-同时，working set 不能远大于所有 GPU cache budget，否则所有实验点都会处于极端 cache thrashing 状态，无法观察收益出现的转折过程。
+每个主实验 run 必须满足：
 
-Experiment 2 使用固定的 prefix reuse 程度。该 reuse 水平应足以让被驱逐状态在后续请求中存在再次访问机会，但不能设计成所有请求都命中同一个 prefix。
+- full-hierarchy restore path 已通过验证；
+- active-request preemption count 为 0；
+- effective concurrency 与 offered load 不因预算变化而改变；
+- CPU tier 未发生未控制的 capacity eviction；
+- 两种 architecture 使用相同 workload trace 与 GPU budget；
+- pressure level 的实际 GPU eviction/hit 与预期区域一致。
 
-请求顺序在所有配置之间完全一致。
+如果降低 GPU budget 导致 scheduler preemption、OOM 或 effective concurrency 改变，该点从主 hierarchy-capacity curve 中剔除并单独记录原因。
 
-Request rate、output length、context distribution 和并发条件保持固定，避免系统负载变化与 cache pressure 同时变化。
+## 8. 实验执行过程
 
-## 5. 初始状态
+从 Low pressure 开始逐步降低 reusable GPU capacity，直到达到最高仍有效的 pressure point。
 
-本实验以 **warm-cache steady-state** 作为主实验条件。
+每个 point 分别运行 GPU-only 与 hierarchical。配对配置的执行顺序交替或随机化，而不是始终固定先跑某一种 architecture。
 
-正式测量前使用固定 workload 建立 cache working set，使系统进入持续发生 cache allocation、hit、eviction 和 restore 的稳定运行阶段。
+每轮进行 warm-up/cache population，然后执行足够长的正式 trace，使 hit、eviction、restore、recomputation 和 throughput 进入稳定状态。
 
-Warm-cache 条件更适合本实验，因为 Experiment 2 关注的是容量不足导致的长期 cache competition，而不是系统从空 cache 开始建立状态的过程。
+不同 pressure point 之间重新初始化 cache。
 
-Cold-cache 不进行完整 pressure sweep。
+## 9. 核心测量指标
 
-如果需要确认 warm initialization 没有引入异常，可以在代表性 pressure point 上保留少量 cold-cache validation，但不作为本实验主要结果。
+### 9.1 GPU cache hit / eviction
 
-## 6. 实验执行过程
+记录 GPU hit volume 和 eviction volume，用于证明 pressure sweep 实际改变了 reusable-cache capacity pressure。
 
-每个模型首先确定一个固定 workload working set。
+### 9.2 CPU cache hit
 
-随后从最高 GPU cache budget 开始逐步降低容量。
+Hierarchical 配置记录 CPU hit volume，并尽可能按 state group 分项。
 
-在每一个 cache budget 下，先运行 GPU-only，再运行 hierarchical cache，并保持完全相同的 workload trace。
+Eviction 增加但 CPU hit 不增加，意味着被驱逐状态缺乏后续 revisit，不能简单解释为 offload 无效。
 
-每轮实验先执行固定的 warm-up/cache population 阶段，然后进入正式测量阶段。
+### 9.3 Recomputation
 
-正式测量持续足够数量的请求，使 cache hit、eviction、recomputation、restore 和 throughput 进入稳定状态。
+记录 GPU miss 导致的 recomputation，并计算 hierarchical 相对 GPU-only 避免的 recomputation。
 
-不同 cache budget 的实验之间重新初始化 cache 状态，避免前一个容量配置影响后一个配置。
+### 9.4 CPU-GPU traffic / stall
 
-所有 pressure point 进行多次独立重复实验。
+记录 restore traffic、transfer activity 和能够测量时的 non-overlapped restore stall。
 
-## 7. 核心测量指标
+### 9.5 Serving performance
 
-### 7.1 GPU cache hit
+记录：
 
-记录不同 GPU cache budget 下的 GPU cache hit。
+- median / tail TTFT；
+- steady-state throughput；
+- achieved request rate；
+- active-request preemption count。
 
-该指标用于确定 cache pressure 是否确实随着 GPU budget 降低而增强。
-
-理论上，随着 GPU budget 减少，GPU hit 应整体下降，但实际变化形态由 workload locality 和模型 state behavior 决定。
-
-### 7.2 GPU eviction
-
-记录 GPU cache eviction 的数量或对应的有效 state volume。
-
-Eviction 是本实验判断 cache pressure 的直接指标。
-
-实验结果需要验证人为设置的 Low、Medium、High、Very High pressure 是否实际对应逐渐增强的 eviction，而不能只根据配置的显存比例进行命名。
-
-### 7.3 CPU cache hit
-
-Hierarchical 配置记录 CPU cache hit。
-
-重点观察 GPU eviction 增加以后，被驱逐状态中有多少能够在后续请求中重新命中 CPU tier。
-
-如果 eviction 增加但 CPU hit 没有同步增加，则说明被驱逐状态缺乏后续 reuse，此时增加 CPU cache 不一定具有价值。
-
-### 7.4 Recomputation
-
-记录由于 reusable state 不存在而触发的 recomputation。
-
-GPU-only 配置用于观察 cache pressure 增加后重复计算成本如何增长。
-
-Hierarchical 配置用于观察 CPU restore 能够避免其中多少 recomputation。
-
-核心结果形成：
-
-> GPU cache pressure → recomputation volume/cost
-
-并同时比较 GPU-only 与 hierarchical cache。
-
-### 7.5 CPU-GPU traffic
-
-记录 hierarchical cache 的 CPU→GPU restore traffic。
-
-随着 GPU cache budget 降低，更多 reusable state 可能进入 CPU tier，因此 CPU-GPU traffic 预计增加。
-
-该指标必须与 recomputation reduction 一起观察。
-
-CPU traffic 增加本身不是负面结果，关键问题是它所替代的计算成本是否更高。
-
-### 7.6 TTFT
-
-记录每一个 GPU cache pressure point 下的 TTFT 分布。
-
-重点观察 GPU-only 在 cache pressure 增加后是否因为 recomputation 导致 TTFT 恶化，以及 hierarchical cache 是否能够延缓或减轻这种恶化。
-
-结果至少需要比较 median 和 tail latency。
-
-### 7.7 Throughput
-
-记录 steady-state throughput。
-
-Throughput 用于判断 CPU hierarchy 在长期运行状态下是否能够降低重复计算造成的 GPU resource consumption，并提升整体 serving capacity。
-
-## 8. 关键派生指标
-
-为了使不同 cache pressure point 更容易比较，可以定义以下派生量。
+## 10. 派生指标
 
 ### Recomputation reduction
 
@@ -179,19 +132,17 @@ recomputation reduction
 recompute_GPU-only - recompute_hierarchical
 ```
 
-用于直接表示 CPU tier 避免了多少重复计算。
-
-### Hierarchy latency benefit
+### Relative TTFT improvement
 
 ```text
-TTFT benefit
+relative TTFT improvement
 =
-TTFT_GPU-only - TTFT_hierarchical
+(TTFT_GPU-only - TTFT_hierarchical)
+/
+TTFT_GPU-only
 ```
 
-正值表示 hierarchy 带来 latency 改善。
-
-### Throughput benefit
+### Throughput gain
 
 ```text
 throughput gain
@@ -199,144 +150,51 @@ throughput gain
 throughput_hierarchical / throughput_GPU-only - 1
 ```
 
-用于表示 hierarchy 的相对吞吐收益。
+所有派生指标必须保留对应绝对值和 raw measurements。
 
-这些指标都需要与原始测量值同时保存，不能只保留归一化结果。
+## 11. 结果组织
 
-## 9. 结果组织
+实验至少形成四组主要结果：
 
-实验最终至少形成四组主要结果。
+1. **GPU budget / pressure → GPU hit and eviction**，验证 pressure curve；
+2. **GPU pressure → CPU-tier hit contribution**，判断 hierarchy 是否接管被驱逐 working set；
+3. **GPU pressure → recomputation reduction + restore traffic/stall**，解释 trade-off；
+4. **GPU pressure → TTFT / throughput benefit**，得到 hierarchy value curve。
 
-### 结果一：Cache pressure 是否实际建立
+## 12. 结果判断逻辑
 
-展示：
+### 区域 A：Low pressure
 
-> GPU cache budget → GPU hit / eviction
+GPU eviction 很少，GPU-only 已覆盖主要 reusable working set。Hierarchical CPU hit 很少，端到端收益接近零。这说明 CPU tier 在该容量区域没有明显必要性。
 
-该结果验证自变量是否真正改变了系统 cache pressure。
+### 区域 B：Value onset
 
-### 结果二：Hierarchy 是否扩大有效 cache capacity
+GPU eviction 稳定增加，GPU-only recomputation 开始上升，hierarchical 出现稳定 CPU hit。如果 restore cost 小于被避免的 recomputation，TTFT 或 throughput 开始改善。
 
-展示：
+这一位置定义 hierarchy 的 **capacity value-onset region**。
 
-> GPU cache budget → GPU hit / CPU hit / total effective reuse
+### 区域 C：High pressure
 
-用于判断 GPU cache 不足以后，CPU tier 是否实际接管了一部分 reusable working set。
+CPU hit 和 restore traffic 继续增加。Hierarchy 收益可能继续扩大，也可能因为 CPU-GPU traffic / non-overlapped stall 进入平台甚至下降。
 
-### 结果三：Recomputation 与 traffic trade-off
+两种结果都有效，但必须用 recomputation reduction 与 restore stall 解释。
 
-展示：
+### 情况 D：Eviction 增加但 CPU hit 仍低
 
-> GPU cache budget → recomputation reduction + CPU-GPU traffic
+说明被驱逐状态本身缺乏后续 reuse。该结果指向 workload reuse，而不是 data-movement cost。Experiment 3 会独立研究这一变量。
 
-用于判断 hierarchy 是通过什么代价减少重复计算。
+## 13. 与其他实验的关系
 
-### 结果四：End-to-end benefit
+Experiment 1 回答固定代表性条件下 hierarchy 是否有基础收益。
 
-展示：
+Experiment 2 隔离 **capacity pressure**。
 
-> GPU cache budget → TTFT / throughput
+Experiment 3 在 Experiment 2 选出的代表性 pressure region 下隔离 **prefix reuse opportunity**。
 
-同时比较 GPU-only 与 hierarchical cache。
+Experiment 4 只复验代表性 pressure/reuse 结论，不重复本实验完整 sweep。
 
-这一结果用于得到 hierarchy value curve。
+## 14. 实验边界
 
-## 10. 预期分析重点
+本实验只系统改变 GPU reusable-cache budget。
 
-本实验最重要的结果不是寻找一个绝对最优 GPU cache size，而是识别 hierarchical cache 收益随 cache pressure 变化的整体形态。
-
-理想情况下可以观察到三个区域。
-
-### 区域 A：GPU cache 充足
-
-GPU hit 较高，eviction 很少。
-
-GPU-only 已经能够保存主要 working set，因此 hierarchical cache 的 CPU hit 很少。
-
-两种系统的 TTFT 和 throughput 接近。
-
-该区域说明 CPU tier 没有明显必要性。
-
-### 区域 B：GPU cache 开始不足
-
-GPU eviction 增加。
-
-GPU-only recomputation 开始明显增长。
-
-Hierarchical cache 可以通过 CPU hit 保存部分被驱逐状态，并降低 recomputation。
-
-如果 CPU restore cost 小于重新计算成本，则 hierarchy 的 TTFT 和 throughput 收益开始出现。
-
-这一阶段是本实验最关键的 **value onset region**。
-
-### 区域 C：GPU cache 严重不足
-
-GPU eviction 与 CPU restore 都非常频繁。
-
-此时可能出现两种结果。
-
-第一种结果是 hierarchy 收益继续扩大，因为 CPU tier 避免了大量 expensive recomputation。
-
-第二种结果是 hierarchy 收益达到平台甚至下降，因为 CPU-GPU traffic 自身成为新的瓶颈。
-
-两种结果都具有明确的系统意义。
-
-## 11. 结果判断逻辑
-
-### 情况 A：只有高 pressure 下 hierarchy 才有收益
-
-如果 Low 和 Medium pressure 下两种方案接近，而 High pressure 后 hierarchical cache 明显改善 TTFT 或 throughput，则可以说明：
-
-> hierarchical cache 主要是 GPU HBM shortage 下的容量扩展机制，其价值取决于 cache working set 是否超过 GPU 容量。
-
-### 情况 B：Medium pressure 已出现稳定收益
-
-如果 GPU cache 尚未进入极端 thrashing 时 hierarchy 已经产生稳定收益，则说明 CPU tier 不只是 OOM 或极端容量不足的兜底方案，而可能在正常高负载 serving 中具有实际价值。
-
-### 情况 C：Cache pressure 增加，但 hierarchy 始终没有性能收益
-
-如果 CPU hit 与 recomputation reduction 存在，但端到端性能没有改善，则说明 CPU-GPU restore overhead 抵消了计算节省。
-
-这种结果意味着 hierarchy 的瓶颈已经从 cache capacity 转移到 data movement efficiency。
-
-### 情况 D：CPU hit 始终很低
-
-如果 GPU eviction 增加，但 CPU hit 仍然很低，则说明当前 workload 被淘汰状态缺乏后续 reuse。
-
-此时 hierarchical cache 无收益的主要原因不是 restore 太慢，而是缺乏值得保存的 reusable state。
-
-## 12. 与 Experiment 1 的关系
-
-Experiment 1 回答：
-
-> 在一个固定且具有代表性的 cache pressure 条件下，hierarchical cache 是否存在基础收益。
-
-Experiment 2 进一步回答：
-
-> 这种收益是否由 GPU HBM pressure 驱动，以及收益从什么压力区间开始出现。
-
-因此 Experiment 2 不重复 cold/warm cache 的完整对照，而以 warm steady-state 为主，系统 sweep GPU cache budget。
-
-Experiment 1 建立“有没有价值”的基础证据，Experiment 2 建立“什么时候因为 GPU cache 不足而变得有价值”的条件边界。
-
-## 13. 实验边界
-
-本实验只系统改变 GPU cache budget。
-
-Prefix reuse ratio 保持固定。
-
-Request rate 和 concurrency 保持固定。
-
-Cache locality pattern 保持固定。
-
-Scheduler strategy 保持固定。
-
-CPU cache capacity 应保证不是本实验中的主要约束，否则实验会同时改变 GPU pressure 和 CPU capacity pressure。
-
-模型之间的结果可以分别报告，但本实验不根据模型差异直接推断 attention architecture 的因果作用。
-
-最终目标是得到一条清晰的：
-
-> **GPU cache pressure → hierarchical cache value**
-
-关系曲线，为后续 prefix reuse 实验和最终系统价值判断提供基础。
+Prefix reuse、cache locality、request ordering、request rate、concurrency target、context/output distribution 和 scheduler strategy 均保持固定。
