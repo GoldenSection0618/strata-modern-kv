@@ -95,21 +95,38 @@ Hardware comparison 同时保留：
 
 Experiment 3 使用 `2 models × 2 GPUs` 的完整组合，但不重新执行前置实验的完整 mechanism sweep。
 
-Primary matrix 使用：
+Primary workload family 使用：
 
 - Long-context reuse；
 - Short-context control；
-- Mixed workload；
-- Low / Medium / High operating regions；
-- Baseline / Full Configuration。
+- Mixed workload。
 
-Full Configuration 只包含已经通过前置 capability / validity gate 的 mechanisms。
+Primary system comparison 使用：
+
+- Baseline；
+- `common_full`。
+
+`common_full` 的 mechanism set 必须在正式 optimized results 生成前冻结，并在四种 model × hardware 组合上保持相同 feature set 与经过验证的等价语义。不能因为某一组合缺少 capability，就静默删除一个 mechanism 后继续使用 `common_full` / Full Configuration 标签。
+
+如果任一组合不能执行冻结的 `common_full`，该组合对这一 full-system cross-product 标记为 `unsupported`。项目可以额外报告每个组合自身的 `best_validated_configuration`，但它属于 deployment-oriented supplementary result，不能用于 `common_full` 的跨组合 robustness conclusion。
 
 中间 configuration 只用于预定义触发条件下的 targeted attribution，不扩展为所有 workload 上的完整五配置矩阵。
 
 Mixed workload 必须同时保存 overall 与 request-class-level performance。Aggregate gain 不能掩盖 long-context 或 short-context class 的 material tail-latency regression。
 
 Short-context control 的 material-regression / equivalence rule 优先复用来源 End-to-End Serving 实验中已经冻结且语义完全匹配的判定规则。若 workload、runtime 或 measurement contract 已变化，则必须在查看 generalization optimized results 前重新版本化冻结 decision margin，不能事后决定“多大差异算 regression”。
+
+### 6.1 Primary load semantics
+
+Experiment 3 不把跨模型相同 requests/s 当作必要条件。
+
+每个模型分别使用其 A100 Baseline 完成 load calibration，并在 generalization optimized results 产生前冻结 Low / Medium / High 三个 primary load points 及其 exact arrival schedules。
+
+同一模型的 A100 与 L40 使用完全相同的 frozen arrival/load schedule。这样 primary hardware comparison 保持 `same_workload` 语义。
+
+Qwen3.5 与 Gemma 4 之间的 Low / Medium / High 标签表示各自经过冻结的 representative operating regions，不表示绝对 requests/s 或 token-work 完全相同。跨模型主要比较 normalized Full-vs-Baseline effect、实际 offered-work metadata 与 mechanism observables。
+
+如果相同 frozen schedule 使 A100 与 L40 落入明显不同的 pressure / saturation region，则只增加少量 `matched_pressure` explanatory controls。`matched_pressure` 不进入 primary matrix，也不与 primary same-workload result 混合 aggregation。
 
 ## 7. Normalization
 
@@ -150,7 +167,7 @@ Paired comparison 必须冻结：
 
 如果 capability 只在某一模型或某一硬件组合上成立，则结果明确标记 capability boundary，不能把缺失实现解释为机制失效。
 
-Full Configuration 只有在其组成 mechanisms 均通过当前 model × platform combination 的 capability gate 时才进入 Experiment 3 主结果。
+Experiment 3 的 `common_full` 只有在其全部组成 mechanisms 对四种 model × platform combination 均通过 capability gate 后，才构成完整 primary cross-product。缺失任一组合时必须显式报告 unsupported coverage。
 
 对于 Qwen3.5，full hierarchy 必须同时验证 attention KV 与 recurrent/Gated-DeltaNet state。若 runtime 只恢复其中一类 state，则该 hierarchy capability 为 `partial`。
 
