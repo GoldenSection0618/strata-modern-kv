@@ -24,7 +24,8 @@ cache-locality-scheduler-behavior/
 ├── README.md
 ├── docs/
 │   ├── 00-common-conventions.md
-│   └── 01-locality-arrival-rate-baseline.md
+│   ├── 01-locality-arrival-rate-baseline.md
+│   └── 02-scheduler-component-ablation.md
 ├── code/
 │   └── README.md
 └── results/
@@ -35,7 +36,7 @@ cache-locality-scheduler-behavior/
 - `code/`：workload trace 构造、实验运行、指标采集、结果处理与绘图代码。
 - `results/`：raw measurements、processed data、统计结果与可复现图表产物。
 
-后续 Experiments 2–4 的详细设计在对应实验方案冻结后加入 `docs/`，不提前创建空文档。
+Experiments 1–2 已有详细设计。后续 Experiments 3–4 的详细设计在对应实验方案冻结后加入 `docs/`，不提前创建空文档。
 
 ## Experiment logic
 
