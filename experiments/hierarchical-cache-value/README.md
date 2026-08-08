@@ -11,7 +11,7 @@
 1. **Baseline Benefit**：在固定 workload 与代表性 cache pressure 下，对比 GPU-only 与 GPU + CPU hierarchical cache，并分别考察 cold-cache 与 warm-cache。
 2. **GPU Cache Pressure Scaling**：只改变 GPU reusable-cache capacity pressure，确定 hierarchy 的收益从什么容量区域开始出现。
 3. **Prefix Reuse Scaling**：在固定 cache pressure 下只改变 prefix revisit/reuse opportunity，确定什么程度的 reuse 才值得把状态保留在 CPU。
-4. **Cross-Model Validation**：不重复前两组 sweep，只在第二个模型上复验少量预先选定的代表性配置，检查主要规律是否跨模型成立。
+4. **Cross-Model Validation**：不重复 Experiments 2–3 的完整 sweep，只在第二个模型上复验少量预先选定的代表性配置，检查主要规律是否跨模型成立。
 
 Experiments 1–3 默认在一个通过完整 hierarchy validation gate 的 primary model 上完成。默认候选是 Qwen3.5-9B on A100 40GB。若当前 runtime 无法验证 Qwen3.5 attention KV 与 Gated DeltaNet state 的完整 CPU restore，则不得把 partial offload 当作完整 hierarchy 结果，primary model 应切换为已验证模型。
 
