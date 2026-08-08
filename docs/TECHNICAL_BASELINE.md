@@ -51,11 +51,13 @@ Representative hardware-generalization platform:
 
 - NVIDIA L40 48GB.
 
+NVIDIA documents the L40 as a PCIe Gen4 Ada Lovelace GPU with 48 GB GDDR6 ECC memory. A100 is available in 40 GB and 80 GB variants; this project specifically uses the available 40 GB platform.
+
 These are the platforms available to this project, not claims about the newest GPU generation.
 
 The first five experiment groups use A100 as the default platform unless a design explicitly says otherwise. L40 is mainly reserved for representative hardware-generalization runs.
 
-Every I/O-sensitive run records the actual GPU form factor, PCIe/host topology, NUMA placement, CPU model, host-memory policy, driver, and CUDA runtime. GPU model plus nominal HBM size is insufficient metadata for bandwidth comparison.
+Every I/O-sensitive run records the actual GPU form factor, PCIe/host topology, NUMA placement, CPU model, host-memory policy, driver, and CUDA runtime. GPU model plus nominal memory size is insufficient metadata for bandwidth comparison.
 
 ## 3. Current cluster software constraints
 
@@ -73,13 +75,16 @@ Therefore this project treats driver `525.60.13` as meeting the baseline CUDA 12
 
 ### 3.1 SGLang packaging status
 
-SGLang v0.5.11 moved the default CUDA stack to CUDA 13.0 across SGLang, `sgl-kernel`, and default images. The upstream migration tracker states that a CUDA 12.9 path remains maintained as a non-default compatibility path.
+SGLang v0.5.11 moved the default CUDA stack to CUDA 13.0 across SGLang, `sgl-kernel`, and default images. Later release-line documentation continues to treat CUDA 13 as the default path, while the upstream CUDA migration work retains CUDA 12.9 as a non-default compatibility path.
+
+The current SGLang repository release line has advanced beyond v0.5.11. The transition version is retained here because it marks the packaging change relevant to this cluster, not because v0.5.11 is the recommended project version.
 
 Therefore:
 
-- default CUDA-13 SGLang packages/images are not the project execution path on the current node;
-- a non-Docker CUDA-12.x-compatible installation must be selected and pinned;
-- the node meeting NVIDIA's CUDA 12.x minor-compatibility floor does not prove that SGLang's CUDA 12.9 build, selected model, HiCache backend, PTX/native kernels, or target attention backend work correctly.
+- default CUDA-13 SGLang packages/images are not the project execution path on the current A100 node;
+- a non-Docker CUDA-12.x-compatible installation must be explicitly selected and pinned for the chosen release/commit;
+- the node meeting NVIDIA's CUDA 12.x minor-compatibility floor does not prove that a CUDA 12.9 SGLang build, selected model, HiCache backend, PTX/native kernels, or target attention backend works correctly;
+- current upstream defaults must not be copied into the experiment configuration without resolving them on the exact pinned build.
 
 Before SGLang contributes measured results, validation must cover import, native-kernel loading, server launch, target model execution, hierarchical-cache behavior, and any direct/kernel I/O path used by the experiment.
 
@@ -87,15 +92,33 @@ Before SGLang contributes measured results, validation must cover import, native
 
 The project previously attempted `vLLM 0.26.0` from the stable/default package path on this node and observed a native-extension dependency on `libcudart.so.13`. This is retained as a **cluster-specific failed baseline**.
 
-The v0.26.0 stable/default release wheel targets CUDA 13.0. Current vLLM main/nightly documentation has since changed again and uses CUDA 12.9 as the default variant, with CUDA 13.0 also provided. Packaging policy is therefore release/branch-dependent and must not be inferred from the package name alone.
+The distinction between vLLM release packaging paths is important:
+
+- the un-suffixed stable v0.26.0 wheel used by the ordinary stable install path is documented as CUDA 13.0-compatible by default;
+- v0.26.0 also has an explicit `+cu129` release-wheel variant;
+- current vLLM main/nightly documentation uses CUDA 12.9 as the default binary variant and also provides CUDA 13.0 variants.
+
+Therefore adding a CUDA-12.9 PyTorch index to a command is not by itself proof that the installed vLLM native extension is a CUDA-12.9 build. The selected vLLM wheel/build artifact itself must be identified and recorded.
 
 For this project:
 
-- the previously tested vLLM 0.26.0 default CUDA-13 binary path is not a validated runtime on the current node;
-- an explicitly selected CUDA-12.x-compatible release wheel, development wheel, or source build remains a candidate;
+- the previously tested vLLM 0.26.0 un-suffixed CUDA-13 binary path is not a validated runtime on the current node;
+- the explicit v0.26.0 `+cu129` release wheel, a pinned CUDA-12.9 development wheel, or a source build is a candidate path;
 - driver `525.60.13` meeting the CUDA 12.x minor-compatibility floor is necessary context but not sufficient runtime validation;
-- the exact vLLM release/commit, wheel/build source, CUDA target, and native-extension status must be pinned;
+- the exact vLLM release/commit, wheel/build source, CUDA target, PyTorch build, and native-extension status must be pinned;
 - a candidate contributes no experimental result until model execution, cache/state behavior, and required connector or scheduler mechanisms pass validation.
+
+### 3.3 Target-checkpoint runtime support
+
+Generic model-family support is not sufficient for this project because the experiments depend on exact hybrid-state behavior.
+
+For Qwen3.5, current official SGLang cookbook documentation explicitly lists `Qwen/Qwen3.5-9B`. The documented recipe uses the SGLang main branch at that support point. This establishes an upstream model-support candidate, but not proof that the project's pinned non-Docker CUDA-12.x build supports the model or the required hierarchical-state mechanisms.
+
+For Gemma 4, current official SGLang cookbook documentation describes Gemma 4 support but does not list the exact `google/gemma-4-12B-it` Unified checkpoint among its enumerated deployment models. This absence does not prove the checkpoint is unsupported, but generic Gemma 4 support cannot be used as evidence that this exact target works.
+
+A vLLM v0.21.0 issue reported an initialization failure for the exact Gemma 4 12B checkpoint. That historical issue does not establish the status of v0.26.0, but it is sufficient reason not to assume current support without a fresh pinned-version validation.
+
+Consequently both target checkpoints must pass an explicit model gate on each runtime/platform combination before any mechanism experiment begins. For Gemma 4 12B in particular, successful plain generation is a prerequisite before cache/hierarchy conclusions are attempted.
 
 ## 4. Runtime roles
 
@@ -105,11 +128,13 @@ Runtime selection follows the mechanism being measured and the build that actual
 
 ### 4.1 vLLM
 
-Current vLLM cache configuration exposes hybrid/Mamba-style cache controls, including separate physical cache-group sizing and `prefix_match_unit`.
+Current vLLM cache configuration exposes hybrid/Mamba-style cache controls, including separate Mamba cache/block settings and `prefix_match_unit`.
 
 `prefix_match_unit` is the finest token boundary at which prefix-cache hashes/hits can land. Current documentation explicitly allows it to be finer than physical KV cache blocks when divisibility requirements hold. It controls matching granularity, not how often states are stored.
 
-The current `OffloadingConnector` extends prefix caching into pinned CPU memory and can also participate in configurations with an additional secondary tier. Only the CPU primary tier has direct GPU access in that design. Completed GPU blocks can be copied into host memory and promoted back on demand; GPU↔CPU transfers use asynchronous DMA (`cudaMemcpyAsync`).
+Current vLLM also exposes group-aware KV-cache capacity and Mamba cache controls. A hybrid-model experiment must therefore record the resolved physical/cache-group layout rather than infer capacity from a single ordinary KV-block count.
+
+The current `OffloadingConnector` extends prefix caching into pinned CPU memory and can also participate in configurations with additional secondary tiers. Only the CPU primary tier has direct GPU access in that design. Completed GPU blocks can be copied into host memory and promoted back on demand; GPU↔CPU transfers use asynchronous DMA (`cudaMemcpyAsync`).
 
 Therefore a vLLM experiment must keep distinct:
 
@@ -128,7 +153,7 @@ SGLang HiCache remains the preferred mechanism candidate for the Page Granularit
 Current upstream server arguments expose, among others:
 
 - `--enable-hierarchical-cache`;
-- `--page-size`;
+- general cache page-size controls such as `--page-size` where supported by the selected backend;
 - `--hicache-io-backend` with `direct` and `kernel` GPU paths;
 - `--hicache-mem-layout`;
 - `--hicache-write-policy`;
@@ -138,7 +163,7 @@ The current HiCache design documentation describes `direct` as standard CUDA-cop
 
 Defaults and supported option sets have changed across SGLang revisions. The project therefore pins resolved values explicitly and does not rely on current/default documentation alone.
 
-Attention-backend support for page size and hybrid-state support must be validated on the exact selected commit.
+Attention-backend support for page size and hybrid-state support must be validated on the exact selected commit. Model launch support is not equivalent to HiCache support for every state group required by that model.
 
 ## 5. Strata scheduler reference semantics
 
@@ -181,7 +206,11 @@ Restoring only attention KV is a partial hierarchy, not a full Qwen3.5 hierarchi
 
 ### 6.3 Gemma 4 gate
 
-Validation must cover the local/sliding-window and global-attention state groups actually retained by the pinned runtime.
+Validation must first confirm that the exact `google/gemma-4-12B-it` checkpoint executes correctly on the pinned runtime.
+
+Cache/state validation must then cover the local/sliding-window and global-attention state groups actually retained by that runtime.
+
+Generic Gemma 4 model-family support or successful execution of another Gemma 4 variant does not satisfy this gate.
 
 ### 6.4 Scheduler gate
 
@@ -239,6 +268,8 @@ GPU-assisted I/O is not beneficial merely because bandwidth rises. GPU compute i
 
 A runtime feature documented upstream but not executable under this project's pinned cluster environment is a candidate capability, not an available experimental capability.
 
+Generic model-family support is likewise a candidate capability. Exact target-checkpoint support and the mechanism-specific state path must be separately verified.
+
 ## 9. Primary references
 
 ### Original system
@@ -258,10 +289,14 @@ A runtime feature documented upstream but not executable under this project's pi
 - Current KV offloading guide: https://docs.vllm.ai/en/latest/features/kv_offloading_usage/
 - Current main-branch CUDA installation source: https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md
 - vLLM 0.26.0 release: https://github.com/vllm-project/vllm/releases/tag/v0.26.0
-- Official vLLM-Omni installation note documenting the vLLM 0.26.0 default CUDA-13 wheel: https://docs.vllm.ai/projects/vllm-omni/en/latest/getting_started/installation/gpu/
+- Official vLLM-Omni installation note documenting the vLLM 0.26.0 un-suffixed CUDA-13 wheel: https://docs.vllm.ai/projects/vllm-omni/en/latest/getting_started/installation/gpu/
+- Gemma 4 12B v0.21.0 support issue retained as a validation warning: https://github.com/vllm-project/vllm/issues/44494
 
 ### SGLang
 
+- Current SGLang documentation: https://docs.sglang.io/
+- Qwen3.5 cookbook: https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.5
+- Gemma 4 cookbook: https://docs.sglang.io/cookbook/autoregressive/Google/Gemma4
 - Current HiCache design: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/hicache_design.mdx
 - Current server arguments: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/server_arguments.mdx
 - v0.5.11 CUDA-13 migration release: https://github.com/sgl-project/sglang/releases/tag/v0.5.11
