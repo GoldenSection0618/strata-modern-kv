@@ -2,31 +2,39 @@
 
 ## 1. Evaluation objective
 
-The objective is to re-evaluate the main systems claims behind Strata under modern hybrid-attention LLMs and current GPU platforms.
+The objective is to re-evaluate the main systems claims behind Strata under modern hybrid LLMs and current GPU platforms.
 
-The experiment suite is designed around causal questions rather than one-to-one figure reproduction. Each group should be broad enough to support a credible conclusion, while avoiding repeated measurements that answer the same question.
+The experiment suite is organized around causal questions rather than one-to-one figure reproduction. Each group must be broad enough to support a credible conclusion while avoiding repeated measurements that answer the same question.
+
+The project uses `KV/state` as an umbrella term. Attention KV, sliding-window/local KV, and recurrent/linear-attention state are separated whenever the runtime exposes them. Current model and runtime facts are tracked in [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md).
 
 ## 2. Experiment groups
 
 ### 2.1 Modern KV / state bottleneck profiling
 
-**Question:** Does the bottleneck studied by Strata still exist on modern hybrid-attention models, and how severe is it?
+**Question:** Does the bottleneck studied by Strata still exist on modern hybrid models, and under which workload conditions does it become important?
 
-Vary representative workload pressure along three dimensions:
+The group contains four experiments:
 
-- context length;
-- shared-prefix length;
-- concurrency / request rate.
+1. context-length scaling;
+2. shared-prefix-ratio scaling;
+3. request-arrival-rate scaling;
+4. cross-model synthesis and matched validation.
 
-Observe:
+The first three experiments use one primary independent variable at a time. Active concurrency in the load experiment is observed as an outcome of arrival pressure rather than swept independently.
 
-- cache or recurrent-state memory growth;
-- prefill latency;
-- CPU–GPU traffic;
-- I/O stall;
-- TTFT.
+Primary observations include:
 
-Run this group on both Qwen3.5-9B and Gemma 4 12B.
+- cache/state footprint, separated by state type when possible;
+- prefill or service computation time;
+- CPU-GPU transfer volume and transfer activity;
+- non-overlapped I/O stall;
+- queueing delay under load;
+- TTFT and throughput.
+
+The main hierarchical-cache condition is a verified **CPU-resident hit**. A **recompute baseline** is used to quantify saved computation, and a **GPU-resident hit control** is used when practical to estimate the lower bound for reuse without CPU-GPU restore cost.
+
+Run this group on both Qwen3.5-9B and Gemma 4 12B. Detailed designs and common measurement conventions are maintained under `experiments/modern-kv-state-bottleneck/`.
 
 This group establishes whether the rest of the Strata-style optimization space is still practically relevant.
 
@@ -34,24 +42,25 @@ This group establishes whether the rest of the Strata-style optimization space i
 
 ### 2.2 Hierarchical cache value
 
-**Question:** When GPU memory is constrained, is extending cache/state storage into CPU memory still worthwhile?
+**Question:** When GPU memory is constrained, is extending reusable cache/state into CPU memory still worthwhile?
 
-Compare:
+Compare explicit residency conditions:
 
-- GPU-only cache;
-- GPU + CPU hierarchical cache.
+- GPU-only / GPU-resident reuse;
+- CPU-resident hierarchical reuse;
+- recomputation when the reusable state is unavailable.
 
 Evaluate under different combinations of:
 
-- warm and cold cache states;
 - GPU cache-capacity pressure;
-- prefix-reuse intensity.
+- prefix-reuse intensity;
+- representative context sizes.
 
 Observe:
 
-- GPU and CPU cache hit behavior;
+- GPU and CPU cache-hit behavior;
 - recomputation;
-- CPU–GPU traffic;
+- CPU-GPU traffic;
 - TTFT;
 - throughput.
 
@@ -68,7 +77,7 @@ Control two primary factors:
 - cache page granularity;
 - I/O mechanism.
 
-Measure three layers of behavior:
+Measure three layers of behavior.
 
 **Cache layer**
 
@@ -78,7 +87,8 @@ Measure three layers of behavior:
 **I/O layer**
 
 - sustained host-to-GPU bandwidth;
-- bandwidth utilization.
+- bandwidth utilization;
+- transfer size distribution.
 
 **GPU layer**
 
@@ -86,7 +96,7 @@ Measure three layers of behavior:
 - decode throughput;
 - interference between I/O work and model computation.
 
-The goal is to reconstruct the full causal chain from cache granularity to reuse, transfer efficiency, and final compute impact.
+The goal is to reconstruct the causal chain from cache granularity to reuse, transfer efficiency, and final compute impact. The experiment must distinguish raw transfer duration from non-overlapped I/O stall so asynchronous overlap is not double counted.
 
 ---
 
@@ -119,7 +129,7 @@ Observe:
 - delay hits;
 - redundant prefill;
 - queueing delay;
-- I/O stall;
+- non-overlapped I/O stall;
 - TTFT;
 - throughput.
 
@@ -131,7 +141,7 @@ This group should explain not only whether the scheduler helps, but which mechan
 
 **Question:** Do the individual mechanisms combine into meaningful serving gains without introducing regressions?
 
-Use three workload families:
+Use three workload families.
 
 #### A. Long-context reuse
 
@@ -182,9 +192,9 @@ Representative matrix:
 
 The full matrix is used only for representative configurations selected from the first five experiment groups. It is not necessary to repeat the complete experiment suite four times.
 
-The model dimension is intended to establish cross-model robustness and to relate actual cache/state behavior to observed performance. Differences between two models must not be interpreted as proof that attention architecture alone is the causal factor.
+The model dimension establishes cross-model robustness and relates measured cache/state behavior to observed performance. Differences between two models must not be interpreted as proof that attention architecture alone is the causal factor.
 
-The hardware dimension evaluates whether conclusions depend strongly on memory capacity, bandwidth, transfer characteristics, or GPU compute behavior.
+The hardware dimension evaluates whether conclusions depend strongly on memory capacity, CPU-GPU transfer characteristics, memory bandwidth, or GPU compute behavior.
 
 ## 3. Experimental logic
 
@@ -204,13 +214,16 @@ Do the pieces improve end-to-end serving?
 Do the conclusions generalize?
 ```
 
-If an earlier premise is no longer true on modern models, later results should be interpreted as conditional engineering gains rather than evidence that the original bottleneck remains broadly important.
+If an earlier premise is no longer true on modern models, later results must be interpreted as conditional engineering gains rather than evidence that the original bottleneck remains broadly important.
 
 ## 4. Reproducibility principles
 
 For every reported experiment:
 
-- record model, hardware, software version, workload definition, and configuration;
+- record exact model identifier and revision;
+- record hardware, driver, CUDA/runtime, serving-engine version or commit, and relevant cache feature flags;
+- record workload definition and token-length convention;
+- record cache-residency mode and cache/state policy;
 - keep raw measurements separate from processed plots;
 - repeat measurements when variance is non-negligible;
 - preserve failed or negative results when they affect interpretation;
