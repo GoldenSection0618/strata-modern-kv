@@ -87,12 +87,12 @@ Before SGLang contributes measured results, validation must cover import, native
 
 The project previously attempted `vLLM 0.26.0` from the stable/default package path on this node and observed a native-extension dependency on `libcudart.so.13`. This is retained as a **cluster-specific failed baseline**.
 
-The v0.26.0 release line uses CUDA 13.0 as its default binary target. Current vLLM main-branch installation documentation has since changed again and exposes CUDA 12.9 as the default precompiled development path, with CUDA 12.8 and CUDA 13.0 variants also documented. Packaging policy is therefore release-dependent and must not be inferred from the package name alone.
+The v0.26.0 stable/default release wheel targets CUDA 13.0. Current vLLM main/nightly documentation has since changed again and uses CUDA 12.9 as the default variant, with CUDA 13.0 also provided. Packaging policy is therefore release/branch-dependent and must not be inferred from the package name alone.
 
 For this project:
 
 - the previously tested vLLM 0.26.0 default CUDA-13 binary path is not a validated runtime on the current node;
-- an explicitly selected CUDA-12.x-compatible wheel or source build remains a candidate;
+- an explicitly selected CUDA-12.x-compatible release wheel, development wheel, or source build remains a candidate;
 - driver `525.60.13` meeting the CUDA 12.x minor-compatibility floor is necessary context but not sufficient runtime validation;
 - the exact vLLM release/commit, wheel/build source, CUDA target, and native-extension status must be pinned;
 - a candidate contributes no experimental result until model execution, cache/state behavior, and required connector or scheduler mechanisms pass validation.
@@ -258,6 +258,7 @@ A runtime feature documented upstream but not executable under this project's pi
 - Current KV offloading guide: https://docs.vllm.ai/en/latest/features/kv_offloading_usage/
 - Current main-branch CUDA installation source: https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md
 - vLLM 0.26.0 release: https://github.com/vllm-project/vllm/releases/tag/v0.26.0
+- Official vLLM-Omni installation note documenting the vLLM 0.26.0 default CUDA-13 wheel: https://docs.vllm.ai/projects/vllm-omni/en/latest/getting_started/installation/gpu/
 
 ### SGLang
 
