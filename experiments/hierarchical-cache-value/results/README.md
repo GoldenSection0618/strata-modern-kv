@@ -151,11 +151,13 @@ Cross-Model Validation 至少形成一张 representative-point summary：
 | Point | Model | Observed pressure | Actual reuse | CPU-tier contribution | Recomputation reduction | TTFT improvement | Throughput gain | Validation status |
 |---|---|---:|---:|---:|---:|---:|---:|---|
 | V0 | primary | ... | ... | ... | ... | ... | ... | full |
-| V0 | secondary | ... | ... | ... | ... | ... | ... | full/unsupported |
+| V0 | secondary | ... | ... | ... | ... | ... | ... | full / partial / unsupported |
 | V1 | primary | ... | ... | ... | ... | ... | ... | full |
-| V1 | secondary | ... | ... | ... | ... | ... | ... | full/unsupported |
+| V1 | secondary | ... | ... | ... | ... | ... | ... | full / partial / unsupported |
 | V2 | primary | ... | ... | ... | ... | ... | ... | full |
-| V2 | secondary | ... | ... | ... | ... | ... | ... | full/unsupported |
+| V2 | secondary | ... | ... | ... | ... | ... | ... | full / partial / unsupported |
+
+Only rows with `full` status enter the full-hierarchy cross-model performance comparison. `partial` and `unsupported` rows remain visible as runtime-capability evidence.
 
 Cross-model analysis 主要比较方向和 mechanism chain，不只比较单个 speedup 数字。
 
