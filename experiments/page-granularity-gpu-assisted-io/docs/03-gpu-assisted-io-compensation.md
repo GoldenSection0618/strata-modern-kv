@@ -2,308 +2,274 @@
 
 ## 1. Objective
 
-本实验定量评估 GPU-assisted I/O 是否能够在小 page 条件下恢复 CPU→GPU cache/state transfer efficiency，并验证这种带宽恢复是否能够转化为实际 serving 性能收益。
+本实验验证 GPU-assisted I/O 是否能够在 Experiment 2 已确认存在 fragmented restore penalty 的配置中恢复 CPU→GPU transfer efficiency，并判断这种恢复是否减少 non-overlapped I/O stall、改善实际 serving performance。
 
-本实验重点研究如下因果链：
+SGLang 主路径将 backend comparison 明确定义为：
 
 ```text
-I/O backend
-    ↓
-transfer efficiency
-    ↓
-cache restore latency / non-overlapped I/O stall
-    ↓
+baseline: --hicache-io-backend direct
+assisted: --hicache-io-backend kernel
+```
+
+所有配置遵循 [`00-common-conventions.md`](00-common-conventions.md)。
+
+## 2. Primary causal question
+
+本实验建立：
+
+```text
+same page size
++ same logical state
++ same host layout
++ same write policy
++ same workload
+        ↓
+direct vs kernel I/O
+        ↓
+transfer efficiency / restore stall
+        ↓
 serving performance
 ```
 
-Page size 本身不再作为新的独立研究对象，而是复用 Experiments 1–2 已经确定的代表性 page-size region。实验不预设 GPU-assisted I/O 一定有效，而是验证它是否能够修复由 fragmented transfer 导致的实际 I/O penalty。
+Page size 不再进行完整 sweep。Experiment 3 的主要独立变量是 I/O backend。
 
-## 2. Research questions
+## 3. Representative operating points
 
-本实验回答以下问题：
+从 Experiments 1–2 的 processed results 预先选择三个 page-size points。
 
-1. GPU-assisted I/O 是否能够提高小 page 条件下的 sustained host→GPU bandwidth；
-2. GPU-assisted I/O 是否能够恢复 fragmented transfer 场景中的 bandwidth utilization；
-3. GPU-assisted I/O 的收益是否随 page size 和 fragmentation 程度变化；
-4. bandwidth improvement 是否能够降低 cache/state restore latency 与 non-overlapped I/O stall；
-5. I/O 层面的改善是否能够进一步转化为 prefill、decode、TTFT 或 overall throughput 的实际收益；
-6. GPU-assisted I/O 是否主要在 fragmentation 明显的 operating region 中具有价值。
+### A. Coarse / I/O-efficient control
 
-## 3. Experimental variables
+选择 effective reuse 较低，但 `direct` backend 已具有较高 bandwidth utilization 的 coarse page point。
 
-本实验控制两个主要变量：
+该点作为负对照，检验 kernel I/O 是否只在存在实际 I/O problem 时才有明显价值。
 
+### B. Reuse-I/O trade-off point
+
+选择已经获得明显 reuse improvement，同时 Experiment 2 开始出现 fragmented restore / bandwidth loss 的 page size。
+
+该点是 Experiment 3 的主要 operating point。
+
+### C. Fine / fragmentation-dominated point
+
+选择 reuse 已接近饱和，但 `direct` path 的 observed fragmentation 与 bandwidth degradation 已明显的 fine page point。
+
+该点用于测量 kernel I/O 的最大 compensation capability 和收益边界。
+
+三个 points 必须在运行 Experiment 3 之前确定，不能根据 kernel backend 的结果重新选择。
+
+## 4. Paired-comparison controls
+
+每一对 `direct` / `kernel` run 必须保持一致：
+
+- model 与 revision；
+- hardware 与 CPU-GPU topology；
+- runtime commit；
+- attention backend；
 - page size；
-- I/O backend。
+- precision 与 cache dtype；
+- GPU cache budget 与 CPU HiCache budget；
+- `hicache_mem_layout`；
+- `hicache_write_policy`；
+- hybrid/recurrent-state tracking parameters；
+- scheduler / overlap configuration；
+- request trace；
+- initial cache residency；
+- logically restored state；
+- random seed 与 repetition protocol。
 
-I/O backend 至少包含 baseline I/O 与 GPU-assisted I/O 两种配置。
-
-Page size 不再执行完整范围 sweep，而是从 Experiments 1–2 中选择少量代表性 operating points。这样可以避免重复前两组实验，并把实验三的主要因果变量集中在 I/O backend 上。
-
-同一比较组中保持以下条件一致：
-
-- model 与 model revision；
-- hardware；
-- serving runtime 与 runtime configuration；
-- precision；
-- cache capacity；
-- cache replacement / eviction policy；
-- scheduler configuration；
-- request sequence；
-- workload；
-- transfer direction；
-- host memory configuration；
-- repetition protocol。
-
-## 4. Page-size operating points
-
-本实验从前两组结果中选择三个代表性 page-size operating points。
-
-### 4.1 Large-page baseline
-
-该点选择 Experiment 2 中 bandwidth utilization 较高、actual transfer fragmentation 较弱的 page size。
-
-该点用于建立负对照，判断 baseline I/O 已经较高效时，GPU-assisted I/O 是否仍然具有明显收益。
-
-### 4.2 Trade-off page size
-
-该点选择 Experiment 1 中已经获得明显 reuse benefit，同时 Experiment 2 开始出现 I/O degradation 的 page size。
-
-该点是实验三的主要 operating point，用于验证 GPU-assisted I/O 是否能够在保留小 page reuse benefit 的同时消除主要 I/O penalty。
-
-### 4.3 Small-page fragmented region
-
-该点选择 Experiment 2 中 actual transfer fragmentation 和 bandwidth degradation 均较明显的 page size。
-
-该点用于评估 GPU-assisted I/O 的最大潜在补偿能力，并检查其在严重 fragmentation 下是否存在收益上限。
+如果 pinned kernel implementation 还存在其他影响 GPU resource usage 的可配置参数，这些参数在 Experiment 3 中使用一个预先固定的配置并写入 metadata。它们的 computation cost 由 Experiment 4 评估，不在 Experiment 3 中针对端到端结果逐 workload 调优。
 
 ## 5. Experimental structure
 
-实验分为两个层次：
+Experiment 3 分为两个层次。
 
-1. Controlled I/O compensation；
-2. Serving-level validation。
+### Experiment 3A: Transfer-only compensation
 
-Controlled I/O experiment 用于验证 GPU-assisted I/O 是否直接改善相同 logical transfer workload 的传输效率。Serving-level validation 用于确认这种改善是否能够进入实际 serving critical path，并产生端到端收益。
+在没有模型计算竞争的 controlled window 中比较 `direct` 与 `kernel` 的纯 restore efficiency。
 
-## 6. Experiment 3A: Controlled I/O compensation
+### Experiment 3B: Serving-level compensation
+
+在真实 prefix reuse serving 中比较两种 backend，验证 bandwidth recovery 是否转化为 critical-path stall reduction 和实际 serving benefit。
+
+## 6. Experiment 3A: Transfer-only compensation
 
 ### 6.1 Purpose
 
-Controlled experiment 在固定 logical transfer workload 下直接比较 baseline I/O 与 GPU-assisted I/O。
+该子实验直接回答：
 
-同一个实验配置分别通过两种 backend 执行，除 I/O backend 外其余条件保持一致。因此，该实验主要用于测量 GPU-assisted I/O 对 transfer efficiency 的直接补偿效果。
+> 在相同 logical HtoD restore workload 下，kernel backend 是否比 direct backend 更有效地利用 CPU→GPU transfer path。
 
-### 6.2 Transfer workload
+没有并发 model computation，因此结果主要描述 I/O backend 本身的能力，而不是 GPU interference。
 
-本实验复用 Experiment 2 已验证的 controlled transfer workload，不重新执行完整 transfer-volume sweep。
+### 6.2 Transfer workloads
 
-实验至少保留能够代表实际 cache restoration 的 medium transfer volume 和 large transfer volume，并覆盖 contiguous transfer 与 fragmented page selection 两种 access pattern。
+复用 Experiment 2A 已验证的 controlled I/O cases，不重新执行完整 transfer-volume sweep。
 
-该设计用于同时观察低 fragmentation 与高 fragmentation 下两种 backend 的差异。
+至少保留：
 
-### 6.3 Comparison matrix
+- medium logical transfer volume；
+- large logical transfer volume；
+- contiguous page range；
+- fragmented page selection。
 
-主要 controlled comparison matrix 为：
+对于每个 representative page size，两种 backend 使用完全相同的 logical payload 与 source/destination state。
 
-```text
-Large page
-    baseline I/O
-    GPU-assisted I/O
+### 6.3 Host state
 
-Trade-off page
-    baseline I/O
-    GPU-assisted I/O
+正式 measurement 前将目标 state 预置到 CPU tier。
 
-Small page
-    baseline I/O
-    GPU-assisted I/O
-```
+Measurement window 只研究 CPU→GPU restore。GPU→CPU backup/write-back 不进入主要 bandwidth calculation。
 
-每个 page size 下，两种 backend 使用完全相同的 logical transfer request、数据范围和 repetition protocol。
+## 7. Experiment 3A metrics
 
-## 7. Controlled I/O metrics
+### 7.1 Actual HtoD payload bytes
 
-### 7.1 Sustained host→GPU bandwidth
+确认 direct 与 kernel 实际恢复的 logical bytes 一致。
 
-该指标用于直接比较不同 backend 在相同 logical transfer workload 下的持续传输效率。
+### 7.2 Sustained HtoD bandwidth
 
-分析重点是 GPU-assisted I/O 相对于 baseline I/O 的 bandwidth recovery，以及这种 recovery 是否随着 page size 减小和 fragmentation 增强而扩大。
+分别计算两种 backend 的 sustained bandwidth。
 
-### 7.2 Bandwidth utilization
+### 7.3 Bandwidth utilization
 
-该指标将实际 sustained bandwidth 与同一硬件上的 reference bandwidth 进行归一化，用于判断 GPU-assisted I/O 能否缩小 small-page configuration 与 large-page baseline 之间的 efficiency gap。
+两种 backend 使用 Experiment 2 中定义的 matched reference methodology。
 
-### 7.3 Transfer completion time
+### 7.4 Restore completion time
 
-该指标测量完成相同 logical data movement 所需要的时间，用于将 bandwidth improvement 转换为更直接的 cache/state restoration latency 证据。
+比较完成同一 logical restore 所需的时间。
 
-### 7.4 Effective transfer granularity
+### 7.5 Backend execution evidence
 
-实验记录 backend 实际执行的 transfer operation 数量与 transfer-size distribution。
+记录足以证明 `direct` 与 `kernel` 路径真实生效的 runtime / profiler evidence。
 
-该指标用于确认 GPU-assisted backend 是否真正改变 fragmented I/O 的执行方式，而不是仅根据 backend 名称或配置推断其已经生效。
+对于 direct path，记录 copy operation / batching behavior。
 
-## 8. Experiment 3B: Serving-level validation
+对于 kernel path，记录 GPU-assisted transfer kernel 的 launch / activity evidence 和实际 payload。
 
-### 8.1 Purpose
+不能要求两种 backend 使用同一种“transfer-size distribution”语义。Kernel backend 可能通过 GPU threads 执行 host-memory access，其 execution model 与标准 DMA copy 不同。正式比较的共同口径是 logical bytes、elapsed transfer interval、bandwidth 和 correctness。
 
-Serving-level experiment 将 baseline I/O 与 GPU-assisted I/O 放入真实 cache reuse workload 中比较，验证 controlled I/O 中观察到的 bandwidth recovery 是否能够降低实际 serving stall 并改善用户可见性能。
+## 8. Experiment 3B: Serving-level compensation
 
-实验复用 Experiment 2 的 representative workloads 和 operating points，不额外引入新的 workload dimension。
+### 8.1 Primary workload
 
-### 8.2 Workload selection
+使用 Experiment 2B 的 controlled prefix-boundary serving workload 和相同 representative page-size points。
 
-实验保留三个代表性 serving scenarios。
+该设置保持前三个实验的因果链一致。
 
-#### A. Low-fragmentation workload
+### 8.2 Robustness workload
 
-该场景对应较大 page 或较低 actual transfer fragmentation。
+增加 Experiment 2B 已使用的 mixed-reuse workload，验证 backend benefit 是否只存在于人工规则 workload。
 
-该组作为负对照，用于确认 GPU-assisted I/O 的收益是否确实集中在存在 fragmented I/O 的场景，而不是所有 workload 中都出现同等改善。
+不增加新的 context × load × locality 大矩阵。
 
-#### B. Moderate-fragmentation workload
+### 8.3 Cache-state requirement
 
-该场景对应 Experiments 1–2 中确定的 trade-off region，同时存在明显 reuse benefit 与明显 I/O degradation。
+每个正式 run 必须验证：
 
-该组是本实验最重要的 serving configuration，用于判断 GPU-assisted I/O 是否能够将 reuse-efficient page size 转化为实际可用的 operating region。
+- target reusable state 实际存在于 CPU tier；
+- request 实际触发 restore；
+- direct 与 kernel 命中的 logical prefix/state 相同；
+- effective reused tokens 在 paired runs 中一致或处于预定义容差内。
 
-#### C. High-fragmentation workload
+如果 backend 切换改变了 reuse outcome，则该 pair 不再是纯 I/O backend comparison，必须标记 invalid 或单独解释。
 
-该场景对应大量小 page transfer 与明显 bandwidth degradation。
+## 9. Serving-level metrics
 
-该组用于观察 GPU-assisted I/O 的最大潜在收益，以及改善后的系统是否会转而受到其他瓶颈限制。
+每个 run 至少记录：
 
-## 9. Serving-level execution
-
-对于每一个固定 workload 和 page-size operating point，分别运行 baseline I/O 与 GPU-assisted I/O。
-
-两组运行使用相同的 request sequence、initial cache state、cache capacity、scheduler policy 和 workload parameters。
-
-每个配置完成统一 warm-up 后执行正式测量，并进行多次重复运行。
-
-没有实际触发目标 CPU→GPU cache/state restore 的 run 不进入 GPU-assisted I/O compensation 分析。
-
-## 10. Serving-level metrics
-
-每个正式 run 至少记录以下指标：
-
-- effective cache reuse；
-- actual transferred bytes；
-- transfer count 与 transfer-size distribution；
-- sustained host→GPU bandwidth；
-- bandwidth utilization；
-- transfer / restore latency；
+- effective reused tokens / reuse efficiency；
+- HtoD restore bytes；
+- DtoH background bytes；
+- backend execution evidence；
+- sustained HtoD bandwidth；
+- restore duration；
 - non-overlapped I/O stall；
-- prefill throughput；
-- decode throughput；
+- prefill execution time / throughput；
+- decode throughput / per-token latency；
 - TTFT；
 - request completion time；
 - overall throughput。
 
-Cache reuse 相关指标主要用于确认 backend 切换没有改变实验 workload 的复用条件。实验三的核心分析集中在 transfer efficiency、stall 与 serving performance 之间的关联。
+Prefill/decode metrics 在本实验中用于确认 serving consequence。GPU-side compute interference 的专门分解留给 Experiment 4。
 
-## 11. Analysis
+## 10. Primary analyses
 
-实验首先比较不同 page-size operating point 下两种 backend 的 sustained bandwidth 与 bandwidth utilization。
+### Analysis A: Backend → bandwidth recovery
 
-随后比较相同配置下的 transfer completion time 与 non-overlapped I/O stall，判断 bandwidth recovery 是否真正减少进入 serving critical path 的 I/O 时间。
-
-最后比较 TTFT、prefill throughput、decode throughput、request completion time 与 overall throughput，判断 I/O 层面的改善是否能够转化为实际系统收益。
-
-正式分析需要验证如下完整因果链：
+在每个 page-size point 上比较：
 
 ```text
-GPU-assisted I/O
-        ↓
-effective transfer efficiency ↑
-        ↓
-cache restore time ↓
-        ↓
-non-overlapped I/O stall ↓
-        ↓
-serving performance ↑
+direct bandwidth
+vs
+kernel bandwidth
 ```
 
-如果链条在某一步中断，则结果需要按实际机制解释，而不能仅根据 bandwidth improvement 宣称端到端优化有效。
+同时报告绝对 bandwidth 与 normalized utilization。
 
-## 12. Expected result structure
-
-正式结果至少形成以下四组图表。
-
-### Figure A: Page size × I/O backend → Sustained bandwidth
-
-该图直接展示不同 granularity 下 GPU-assisted I/O 的 bandwidth recovery。
-
-### Figure B: Page size × I/O backend → Bandwidth utilization
-
-该图展示 GPU-assisted I/O 是否能够缩小 small-page 与 large-page baseline 之间的 I/O efficiency gap。
-
-### Figure C: Page size × I/O backend → Non-overlapped I/O stall
-
-该图用于确认 controlled I/O 中的传输效率提升是否真正减少 serving critical-path stall。
-
-### Figure D: Page size × I/O backend → TTFT / Throughput
-
-该图用于验证 GPU-assisted I/O 的最终 serving benefit。
-
-## 13. Joint interpretation with Experiments 1–2
-
-前三个实验需要形成统一证据链。
+可以计算：
 
 ```text
-Experiment 1
-page size ↓
-→ effective reuse ↑
-
-Experiment 2
-page size ↓
-→ actual transfer fragmentation ↑
-→ I/O efficiency ↓
-
-Experiment 3
-GPU-assisted I/O
-→ I/O efficiency recovery
-→ I/O stall reduction
-→ serving performance recovery
+bandwidth recovery ratio = kernel bandwidth / direct bandwidth
 ```
 
-联合分析最重要的比较是 small page + GPU-assisted I/O 是否能够同时保留 small page 的 cache reuse benefit，并获得接近 large-page baseline 的 I/O efficiency。
+但不能只报告 ratio 而隐藏绝对值。
 
-如果这一结果成立，则说明 GPU-assisted I/O 实际缓解了 page granularity 在 cache reuse 与 transfer efficiency 之间的主要冲突。
+### Analysis B: Backend → restore latency
 
-## 14. Validity checks
+比较相同 logical restore 的 completion time。
 
-正式结果必须满足以下条件：
+如果 bandwidth 上升但 restore completion time 没有改善，需要检查 fixed overhead、batching、measurement window 或其他 bottleneck。
 
-1. 两种 backend 实际完成的 logical data movement 一致；
-2. backend 切换前后的 effective cache reuse 基本一致；
-3. backend 切换不改变 cache replacement policy、scheduler policy 或 request ordering；
-4. actual transferred bytes、transfer count 与 transfer-size distribution 可观测；
-5. GPU-assisted backend 必须确认实际生效，不允许 silently fallback 到 baseline path 后仍标记为 GPU-assisted result；
-6. serving-level performance difference 必须能够与 transfer efficiency 和 non-overlapped I/O stall 的变化对应；
-7. GPU utilization 上升不能直接解释为正收益，GPU-assisted I/O 的 computation interference 留在 Experiment 4 单独分析。
+### Analysis C: Restore latency → non-overlapped stall
 
-## 15. Interpretation boundaries
+在 serving run 中比较两种 backend 的 non-overlapped I/O stall。
 
-如果 GPU-assisted I/O 显著提高 bandwidth，同时降低 non-overlapped I/O stall 和 TTFT，则可以认为原有 fragmented I/O 位于 critical path，并且 GPU-assisted I/O 具有实际系统价值。
+只有 stall 真正减少，I/O recovery 才进入 serving critical path。
 
-如果 bandwidth 明显提高但 TTFT 与 throughput 基本不变，则应解释为 I/O 已被 computation overlap 或系统瓶颈已经转移，而不能把 microbenchmark speedup 等同于 end-to-end benefit。
+### Analysis D: Stall → serving benefit
 
-如果 bandwidth improvement 本身有限，则需要结合 effective transfer granularity 判断 runtime 是否已经进行了较充分的 aggregation，或者 fragmented I/O 是否并非当前配置的主要瓶颈。
+比较 TTFT、request completion time 和 throughput。
 
-## 16. Final conclusion target
+Kernel backend 的 end-to-end improvement 必须能够与 restore/stall evidence 对应。
 
-本实验最终需要明确回答：
+## 11. Expected operating regions
 
-> GPU-assisted I/O 是否能够有效修复小 page 带来的 fragmented I/O penalty，以及这种修复是否能够转化为实际 serving 性能收益。
+Experiment 3 最终区分：
 
-实验结果应尽量区分三个 operating regions：
+- **No-need region**：direct path 已高效，kernel 的额外 transfer benefit 很小；
+- **Effective-compensation region**：kernel 显著恢复 bandwidth 并减少 non-overlapped stall；
+- **Residual-bottleneck region**：kernel 改善 I/O 后，end-to-end performance 仍受计算、调度或其他 bottleneck 限制。
 
-- **No-need region**：baseline I/O 已经足够高效，GPU-assisted I/O 的额外收益有限；
-- **Effective compensation region**：GPU-assisted I/O 显著恢复 bandwidth、降低 I/O stall，并带来实际 serving benefit；
-- **Limited-benefit region**：GPU-assisted I/O 改善 transfer efficiency 后，整体收益仍受到其他瓶颈限制。
+这些 region 是 Experiment 4 的输入，不是本实验对 GPU compute cost 的最终判断。
 
-最关键的结论是确定 Experiment 1 中的 reuse-efficient page-size region 是否能够通过 GPU-assisted I/O 转化为同时兼顾 cache reuse 与 I/O efficiency 的实际 operating region。
+## 12. Validity checks
 
-Experiment 4 在此基础上继续评估 GPU-assisted I/O 占用的 GPU computation resource，以及这种 compensation 的净收益是否值得。
+正式结果必须满足：
+
+1. direct / kernel pair 的 model outputs 数值一致；
+2. logical restored state 与 effective reused tokens 一致；
+3. page size、attention backend、layout、write policy 和 cache budget 不变；
+4. direct 与 kernel backend 都有实际 execution evidence，不存在 silent fallback；
+5. HtoD restore 与 DtoH background traffic 可区分；
+6. transfer-only run 没有并发 model computation；
+7. serving-level performance difference 能与 restore/stall behavior 对应；
+8. kernel resource configuration 没有根据每个 workload 的最终 speedup 单独调优；
+9. unsupported / partial hybrid-state restore 不报告为完整 serving result。
+
+## 13. Interpretation boundaries
+
+如果 kernel 提高 transfer-only bandwidth，但 serving stall 不变，不能声称存在 end-to-end I/O benefit。
+
+如果 kernel 减少 stall，但 throughput / TTFT 改善有限，应解释为 bottleneck migration，而不是 optimization failure。
+
+如果 direct path 在 fine page 下已经通过 runtime aggregation 达到较高 efficiency，kernel benefit 很小是有效结论，并说明现代 runtime 已部分消解 Strata 当年的 I/O mechanism。
+
+本实验不以 GPU utilization 上升作为正面证据，也不在这里判断 GPU resource contention 是否值得。该问题由 Experiment 4 单独处理。
+
+## 14. Final conclusion target
+
+Experiment 3 最终回答：
+
+> 在相同 page granularity、cache state 和 serving workload 下，SGLang kernel GPU-assisted I/O 相对于 direct standard-copy path 能恢复多少 CPU→GPU transfer efficiency，这种 recovery 有多少真正转化为 non-overlapped stall reduction 和 serving benefit。
+
+Experiment 4 在这些 representative points 上继续计算 GPU compute cost 与最终净收益。
