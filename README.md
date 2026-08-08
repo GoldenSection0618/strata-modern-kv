@@ -37,8 +37,9 @@ Detailed designs currently available:
 - [Page granularity and GPU-assisted I/O](experiments/page-granularity-gpu-assisted-io/)
 - [Cache locality and scheduler behavior](experiments/cache-locality-scheduler-behavior/)
 - [End-to-end serving](experiments/end-to-end-serving/)
+- [Model and hardware generalization](experiments/model-hardware-generalization/)
 
-The Model and Hardware Generalization group remains at the project-plan level. Its representative points should be frozen from validated results of the first five groups before an experiment-specific directory is created.
+The Model and Hardware Generalization directory now contains the shared comparison contract and the detailed design for Experiment 1, Cross-model Mechanism Generalization. Representative execution points are still frozen from validated results of the first five groups before measured generalization runs are started.
 
 ## Model and hardware baseline
 
@@ -85,12 +86,13 @@ See [`docs/REPOSITORY_RULES.md`](docs/REPOSITORY_RULES.md).
 
 Work in progress.
 
-Detailed experiment designs are currently specified for the first five groups:
+Detailed experiment designs are currently specified for the first five groups and for Experiment 1 of Model and Hardware Generalization:
 
 - Modern KV / State Bottleneck Profiling;
 - Hierarchical Cache Value Evaluation;
 - Page Granularity and GPU-Assisted I/O;
 - Cache Locality and Scheduler Behavior;
-- End-to-End Serving.
+- End-to-End Serving;
+- Cross-model Mechanism Generalization.
 
-Implementation, pinned-runtime validation, and measured results will be added incrementally. Model and Hardware Generalization remains at the project-plan level until representative validation points are frozen from the earlier groups.
+Implementation, pinned-runtime validation, and measured results will be added incrementally. The remaining hardware-stability and final end-to-end generalization designs will be added after representative validation points and execution contracts are frozen.
