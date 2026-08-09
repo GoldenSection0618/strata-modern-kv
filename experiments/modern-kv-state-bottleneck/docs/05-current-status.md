@@ -77,9 +77,29 @@
 
 ## 4. Exp3：Request-Rate Scaling（qwen）
 
-**状态**：只有一次冒烟测试 `results/exp3/qwen/8192-cpu_hit/`（任务 1269314，COMPLETED 退出码 0），validation FAILED、无 summary、无 raw。**正式实验未跑。**
+**状态**：只有一次冒烟测试 `results/exp3/qwen/8192-cpu_hit/`（任务 1269314，COMPLETED 退出码 0），validation FAILED、无 summary、无 raw。**正式实验未跑，当前提交任务也跑不出有效数据（见下方前置条件）。**
 
-**待确认**：新代码（vllm_stats patch + disable_log_stats=False）验证通过后，需先跑 capacity calibration（cpu_hit 主任务），再用 FROZEN_RATES 跑 recompute/gpu_hit control（工作区代码已支持）。
+### 当前可跑性（2026-08-09 核对）
+
+| 模式 | 可跑性 | 说明 |
+|---|---|---|
+| recompute（control） | ✅ 能出有效数据 | 跳过 cache-hit 验证门，不依赖 stats（exp1/2 已证实） |
+| gpu_hit（control） | ❌ 大概率无数据 | 依赖验证门通过；新 stats 修复未实际验证 |
+| cpu_hit（primary） | ❌ 必然无数据 | 三个障碍叠加，见下 |
+
+**cpu_hit 的三个障碍（按顺序）**：
+
+1. **验证门未验证**：冒烟测试 1269314 跑的是旧代码（日志旧格式 `Warmup: no prefix cache hit detected`）；新修复（patch `get_output()` + `disable_log_stats=False`）还没跑过一次。直接提交大概率重复冒烟结果，浪费 GPU 任务（sbatch 限时 2h）。
+2. **KV offload 未激活（确定）**：`run_exp3.sbatch` 中 `KV_OFFLOAD="${KV_OFFLOAD:-0}"` 默认 0 → 不传 `--kv-offloading-size` → vLLM `vllm/v1/kv_offload/` 根本没启用。无 offload 则 cpu_hit 的 warmup→evict→restore 链路第一步就断。
+3. **eviction filler 填不满 KV cache**：`evict_prefix_to_cpu` 只发 8×4096=32K tokens，而冒烟日志显示 KV cache 容量 **471,258 tokens** → 不会触发 eviction（`preempted_reqs=0` 已证实）。此问题在 `vllm_runner.py`，exp1/2/3 的 cpu_hit 全受影响。
+
+**跑 exp3 的前置顺序**（避免浪费 GPU）：
+
+1. 新代码（7 文件未提交改动）先跑一次 **gpu_hit 单点冒烟**（最小配置），确认验证门通过；
+2. 以 `KV_OFFLOAD=<GB>`（如 8192 MB 量级）提交 cpu_hit，确认 eviction 真的触发（`preempted_hits` / `kv_eviction_events` 非零），必要时加大/修正 filler 逻辑；
+3. 之后才全量：`bash submit_exp3.sh qwen primary` → capacity calibration → 再用 `FROZEN_RATES` 跑 recompute/gpu_hit control（工作区代码已支持）。
+
+**当前 sbatch 已具备**：`KV_OFFLOAD` 环境变量贯通（`--kv-offloading-size`）、`FROZEN_RATES` 贯通（`--skip-calibration --frozen-rates`）、`CONTROL=1`（`--control-mode`）、flashinfer/spawn 修复已内置。
 
 ---
 
