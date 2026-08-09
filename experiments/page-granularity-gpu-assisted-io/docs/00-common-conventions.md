@@ -14,9 +14,11 @@
 - `--hicache-mem-layout`：host cache memory layout；
 - `--hicache-write-policy`：GPU→CPU backup / write-back policy。
 
-SGLang 在本实验组中是 **preferred mechanism candidate**，不是无需验证即可执行的 runtime baseline。正式执行还必须先通过仓库 [`docs/TECHNICAL_BASELINE.md`](../../../docs/TECHNICAL_BASELINE.md) 的 cluster software/build gate，在当前集群建立并固定可运行的 non-Docker CUDA-12-compatible build。
+SGLang 必须使用独立的 `~/yanglihan/dl-stack/envs/sglang` prefix，并与 `qwen` / `gemma4` 两个 vLLM 环境隔离。该环境必须从项目固定的源码 revision 安装，不能回退使用 vLLM prefix，也不能把 SGLang 依赖混装到两个 vLLM 环境。环境布局、加载规则和 compatibility requirements 见 [`docs/ENVIRONMENT_REQUIREMENTS.md`](../../../docs/ENVIRONMENT_REQUIREMENTS.md)。
 
-实验必须记录并固定精确的 SGLang version / commit。不得依赖 runtime 默认值，因为默认 backend、layout 或其他行为可能随版本变化。Upstream feature availability 不能替代本地 execution validation。
+正式实验还必须进行 **mechanism-specific capability validation**：在 exact pinned build 上验证 checkpoint、native kernels、attention backend、page-size support、HiCache effective configuration、hybrid-state restore、`direct` / `kernel` I/O path 和数值一致性。
+
+实验必须记录并固定精确的 SGLang version / commit。不得依赖 runtime 默认值，因为默认 backend、layout 或其他行为可能随版本变化。Upstream feature availability 或环境 import 成功都不能替代 experiment-specific execution validation。
 
 如果最终使用其他 serving runtime，只有在该 runtime 能提供等价且可验证的控制变量时，才能沿用本文档中的实验名称。否则必须重新定义变量，不能把不同语义的 knob 都称为 `page size`。
 
@@ -70,6 +72,7 @@ SGLang 在本实验组中是 **preferred mechanism candidate**，不是无需验
 
 除实验明确改变的变量外，每个 paired comparison 至少显式固定并记录：
 
+- environment identifier / prefix；
 - model identifier 与 revision；
 - SGLang/runtime commit；
 - attention backend；
@@ -83,7 +86,7 @@ SGLang 在本实验组中是 **preferred mechanism candidate**，不是无需验
 - `hicache_write_policy`；
 - scheduler / overlap configuration；
 - request trace 与 random seed；
-- driver、CUDA 与 hardware topology。
+- driver、PyTorch CUDA build、runtime build source 与 hardware topology。
 
 比较 page size 时，除 `page_size` 及其不可避免的派生 allocation behavior 外，上述控制项保持不变。
 

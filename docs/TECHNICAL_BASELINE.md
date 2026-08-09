@@ -2,7 +2,7 @@
 
 > Last verified: 2026-08-09
 
-This document records volatile model-architecture, runtime, hardware, and project-environment facts that affect experiment validity. Every reported run must still record its exact checkpoint revision, runtime commit/version, driver, CUDA/runtime, cache configuration, scheduler configuration, and capability status.
+This document records volatile model-architecture, runtime, hardware, and project-environment facts that affect experiment validity. Environment layout, package versions, compatibility settings, and compute-node loading rules are defined in [`ENVIRONMENT_REQUIREMENTS.md`](ENVIRONMENT_REQUIREMENTS.md). Every reported run must still record its exact checkpoint revision, runtime commit/version, driver, CUDA/runtime, cache configuration, scheduler configuration, and capability status.
 
 ## 1. Model baseline
 
@@ -59,72 +59,99 @@ The first five experiment groups use A100 as the default platform unless a desig
 
 Every I/O-sensitive run records the actual GPU form factor, PCIe/host topology, NUMA placement, CPU model, host-memory policy, driver, and CUDA runtime. GPU model plus nominal memory size is insufficient metadata for bandwidth comparison.
 
-## 3. Current cluster software constraints
+## 3. Cluster software and environment requirements
 
-The inspected A100 node reports:
+The A100 cluster baseline has the following constraints:
 
 - NVIDIA driver `525.60.13`;
 - `nvidia-smi` reports `CUDA Version: 12.0`;
 - Docker deployment is not allowed.
 
-These are project-environment facts and must not be generalized to other clusters.
+These are project-environment constraints and must not be generalized to other clusters.
 
-The `CUDA Version` field printed by `nvidia-smi` must not be interpreted as the locally installed CUDA toolkit version or as a categorical statement that newer CUDA 12.x user-space binaries cannot run. NVIDIA's CUDA minor-version compatibility policy lists Linux driver `525.60.13` as the minimum driver for the CUDA 12.x family. However, minor-version compatibility is conditional. PTX JIT paths and features that require newer driver support can still fail, and a package may contain native extensions with stricter requirements.
+The `CUDA Version` field printed by `nvidia-smi` is a driver capability indicator. It must not be interpreted as the locally installed CUDA toolkit version or as the CUDA target of PyTorch, vLLM, SGLang, or another user-space binary.
 
-Therefore this project treats driver `525.60.13` as meeting the baseline CUDA 12.x minor-compatibility floor, not as proof that CUDA 12.8/12.9 packages or kernels are executable. Every candidate runtime still has to pass native-extension loading, model execution, and mechanism-specific validation on the actual node.
+The project therefore records the actual PyTorch CUDA build, serving-runtime build source, and native-extension dependencies for every formal environment and run.
 
-### 3.1 SGLang packaging status
+### 3.1 Runtime isolation
 
-SGLang v0.5.11 moved the default CUDA stack to CUDA 13.0 across SGLang, `sgl-kernel`, and default images. Later release-line documentation continues to treat CUDA 13 as the default path, while the upstream CUDA migration work retains CUDA 12.9 as a non-default compatibility path.
+The required serving environments are isolated under:
 
-The current SGLang repository release line has advanced beyond v0.5.11. The transition version is retained here because it marks the packaging change relevant to this cluster, not because v0.5.11 is the recommended project version.
+```text
+~/yanglihan/dl-stack/envs/
+├── qwen
+├── gemma4
+└── sglang
+```
 
-Therefore:
+- `qwen` and `gemma4` are vLLM environments.
+- `sglang` is dedicated to SGLang / HiCache and uses the project-pinned source revision.
+- SGLang dependencies must not be installed into the two vLLM environments.
+- SGLang experiments must not fall back to a vLLM prefix.
 
-- default CUDA-13 SGLang packages/images are not the project execution path on the current A100 node;
-- a non-Docker CUDA-12.x-compatible installation must be explicitly selected and pinned for the chosen release/commit;
-- the node meeting NVIDIA's CUDA 12.x minor-compatibility floor does not prove that a CUDA 12.9 SGLang build, selected model, HiCache backend, PTX/native kernels, or target attention backend works correctly;
-- current upstream defaults must not be copied into the experiment configuration without resolving them on the exact pinned build.
+Exact loading and recovery rules are defined in [`ENVIRONMENT_REQUIREMENTS.md`](ENVIRONMENT_REQUIREMENTS.md).
 
-Before SGLang contributes measured results, validation must cover import, native-kernel loading, server launch, target model execution, hierarchical-cache behavior, and any direct/kernel I/O path used by the experiment.
+### 3.2 vLLM package baseline
 
-### 3.2 vLLM packaging status
+Both vLLM environments use the same required software stack:
 
-The project previously attempted `vLLM 0.26.0` from the stable/default package path on this node and observed a native-extension dependency on `libcudart.so.13`. This is retained as a **cluster-specific failed baseline**.
+| Component | Required version |
+|---|---|
+| Python | `3.12.11` |
+| PyTorch | `2.11.0+cu129` |
+| vLLM | `0.26.0+cu129` |
+| Triton | `3.6.0` |
+| Transformers | `5.14.1` |
 
-The distinction between vLLM release packaging paths is important:
+vLLM must use the explicit CUDA-12.9 release wheel:
 
-- the un-suffixed stable v0.26.0 wheel used by the ordinary stable install path is documented as CUDA 13.0-compatible by default;
-- v0.26.0 also has an explicit `+cu129` release-wheel variant;
-- current vLLM main/nightly documentation uses CUDA 12.9 as the default binary variant and also provides CUDA 13.0 variants.
+```text
+vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl
+```
 
-Therefore adding a CUDA-12.9 PyTorch index to a command is not by itself proof that the installed vLLM native extension is a CUDA-12.9 build. The selected vLLM wheel/build artifact itself must be identified and recorded.
+The un-suffixed/default vLLM 0.26.0 CUDA-13 binary is not the project runtime path on this cluster. Adding a CUDA-12.9 PyTorch index does not change the CUDA target of the vLLM native wheel itself, so the selected vLLM artifact must be recorded explicitly.
 
-For this project:
+The vLLM native library must resolve CUDA 12 runtime libraries rather than `libcudart.so.13`.
 
-- the previously tested vLLM 0.26.0 un-suffixed CUDA-13 binary path is not a validated runtime on the current node;
-- the explicit v0.26.0 `+cu129` release wheel, a pinned CUDA-12.9 development wheel, or a source build is a candidate path;
-- driver `525.60.13` meeting the CUDA 12.x minor-compatibility floor is necessary context but not sufficient runtime validation;
-- the exact vLLM release/commit, wheel/build source, CUDA target, PyTorch build, and native-extension status must be pinned;
-- a candidate contributes no experimental result until model execution, cache/state behavior, and required connector or scheduler mechanisms pass validation.
+Both vLLM environments also use the fixed compatibility setting:
 
-### 3.3 Target-checkpoint runtime support
+```bash
+export VLLM_USE_FLASHINFER_SAMPLER=0
+```
+
+This disables the FlashInfer sampling path that triggers the observed CUB `FlagHeads` JIT compilation failure on the project A100 software stack and falls back to the PyTorch sampler. This setting is held fixed across paired vLLM comparisons unless sampler implementation itself becomes an experimental variable.
+
+### 3.3 libstdc++ compatibility
+
+Rocky 8.6 system `libstdc++.so.6` is insufficient when the required Python/runtime stack needs `CXXABI_1.3.15`.
+
+Each relevant conda environment therefore requires `libstdcxx-ng`, and the environment library directory must be visible through `LD_LIBRARY_PATH` before Python starts.
+
+A `sitecustomize.py` change to `LD_LIBRARY_PATH` is not an acceptable substitute because it executes after process startup and cannot reliably alter already-resolved dynamic-linker dependencies.
+
+### 3.4 SGLang package baseline
+
+SGLang / HiCache must use the independent `envs/sglang` prefix and the project-pinned source revision. Current upstream CUDA/package defaults must not be copied into the experiment environment without checking them against the pinned project revision and the cluster constraints.
+
+Environment conformance is separate from mechanism capability. Before SGLang contributes a mechanism-specific result, the relevant experiment must validate the exact checkpoint, native kernels, attention backend, page-size support, HiCache effective configuration, full required state restore, `direct` / `kernel` I/O path where applicable, and numerical consistency.
+
+### 3.5 Target-checkpoint runtime support
 
 Generic model-family support is not sufficient for this project because the experiments depend on exact hybrid-state behavior.
 
-For Qwen3.5, current official SGLang cookbook documentation explicitly lists `Qwen/Qwen3.5-9B`. The documented recipe uses the SGLang main branch at that support point. This establishes an upstream model-support candidate, but not proof that the project's pinned non-Docker CUDA-12.x build supports the model or the required hierarchical-state mechanisms.
+For Qwen3.5, official SGLang cookbook documentation lists `Qwen/Qwen3.5-9B`. This establishes an upstream support reference, but the project still validates the exact pinned runtime and the state mechanisms required by each experiment.
 
-For Gemma 4, current official SGLang cookbook documentation describes Gemma 4 support but does not list the exact `google/gemma-4-12B-it` Unified checkpoint among its enumerated deployment models. This absence does not prove the checkpoint is unsupported, but generic Gemma 4 support cannot be used as evidence that this exact target works.
+For Gemma 4, generic Gemma 4 runtime support cannot be used as evidence that the exact `google/gemma-4-12B-it` checkpoint and its required cache/state mechanisms work correctly.
 
-A vLLM v0.21.0 issue reported an initialization failure for the exact Gemma 4 12B checkpoint. That historical issue does not establish the status of v0.26.0, but it is sufficient reason not to assume current support without a fresh pinned-version validation.
+A vLLM v0.21.0 issue reported an initialization failure for the exact Gemma 4 12B checkpoint. That historical issue does not establish the behavior of vLLM 0.26.0+cu129, so the target checkpoint must be validated on the project runtime rather than inferred from the historical issue.
 
-Consequently both target checkpoints must pass an explicit model gate on each runtime/platform combination before any mechanism experiment begins. For Gemma 4 12B in particular, successful plain generation is a prerequisite before cache/hierarchy conclusions are attempted.
+Consequently both target checkpoints must pass an explicit model gate on each runtime/platform combination before mechanism results are accepted. For Gemma 4 12B in particular, successful plain generation is a prerequisite before cache/hierarchy conclusions are attempted.
 
 ## 4. Runtime roles
 
 The project does not assume one serving engine is optimal for every experiment group.
 
-Runtime selection follows the mechanism being measured and the build that actually passes the current cluster capability gate.
+Runtime selection follows the mechanism being measured and the exact build used by the experiment.
 
 ### 4.1 vLLM
 
@@ -148,7 +175,7 @@ A generic `page size` label is not sufficient when these differ.
 
 ### 4.2 SGLang HiCache
 
-SGLang HiCache remains the preferred mechanism candidate for the Page Granularity and GPU-Assisted I/O group, subject to the cluster build gate.
+SGLang HiCache is the preferred mechanism path for the Page Granularity and GPU-Assisted I/O group.
 
 Current upstream server arguments expose, among others:
 
@@ -161,15 +188,15 @@ Current upstream server arguments expose, among others:
 
 The current HiCache design documentation describes `direct` as standard CUDA-copy I/O and `kernel` as GPU-assisted I/O.
 
-Defaults and supported option sets have changed across SGLang revisions. The project therefore pins resolved values explicitly and does not rely on current/default documentation alone. The current code can also override a requested layout at runtime for some backend combinations, so command-line intent and effective configuration must both be recorded.
+Defaults and supported option sets have changed across SGLang revisions. The project therefore pins resolved values explicitly and does not rely on current/default documentation alone. The code can also override a requested layout at runtime for some backend combinations, so command-line intent and effective configuration must both be recorded.
 
 Attention-backend support for page size and hybrid-state support must be validated on the exact selected commit. Model launch support is not equivalent to HiCache support for every state group required by that model.
 
 ### 4.3 SGLang hybrid-state HiCache status
 
-Current SGLang code contains a hybrid cache assembly path and recent Qwen3.5 reports show separate hierarchical attention-KV and Mamba/recurrent host pools being allocated. Therefore full hybrid-state HiCache is an implemented **candidate path**, not a purely missing feature.
+Current SGLang code contains a hybrid cache assembly path and recent Qwen3.5 reports show separate hierarchical attention-KV and Mamba/recurrent host pools being allocated. Full hybrid-state HiCache is therefore an implemented path, but experiment-level correctness and resource semantics must be validated on the exact project model and pinned build.
 
-It is not yet safe to treat that path as validated for this project. Recent upstream reports on larger Qwen3.5 hybrid models describe:
+Recent upstream reports on larger Qwen3.5 hybrid models describe:
 
 - a `HiMambaRadixCache` transfer-path crash on first inference in an April 2026 main-branch environment;
 - `--hicache-size` allocating the requested amount separately to the KV host pool and the Mamba host pool in a v0.5.13 report, causing substantial host-memory over-allocation relative to the recurrent device state;
@@ -291,9 +318,9 @@ CPU offloading is not beneficial merely because it produces hits. A valid system
 
 GPU-assisted I/O is not beneficial merely because bandwidth rises. GPU compute interference and end-to-end serving performance must be included.
 
-A runtime feature documented upstream but not executable under this project's pinned cluster environment is a candidate capability, not an available experimental capability.
+Environment conformance does not establish mechanism capability. A runtime feature must be validated on the exact pinned build before it contributes a mechanism-specific result.
 
-Generic model-family support is likewise a candidate capability. Exact target-checkpoint support and the mechanism-specific state path must be separately verified.
+Generic model-family support is likewise insufficient. Exact target-checkpoint support and the mechanism-specific state path must be separately verified.
 
 For hybrid runtimes, configured cache size is not automatically equivalent to actual total memory consumed. Resolved allocation by state group is part of the measured system state.
 
@@ -314,9 +341,8 @@ For hybrid runtimes, configured cache size is not automatically equivalent to ac
 
 - Current cache configuration: https://docs.vllm.ai/en/latest/api/vllm/config/cache/
 - Current KV offloading guide: https://docs.vllm.ai/en/latest/features/kv_offloading_usage/
-- Current main-branch CUDA installation source: https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md
 - vLLM 0.26.0 release: https://github.com/vllm-project/vllm/releases/tag/v0.26.0
-- Official vLLM-Omni installation note documenting the vLLM 0.26.0 un-suffixed CUDA-13 wheel: https://docs.vllm.ai/projects/vllm-omni/en/latest/getting_started/installation/gpu/
+- vLLM 0.26.0 CUDA-12.9 wheel index: https://wheels.vllm.ai/0.26.0/cu129/vllm/
 - Gemma 4 12B v0.21.0 support issue retained as a validation warning: https://github.com/vllm-project/vllm/issues/44494
 
 ### SGLang
@@ -327,8 +353,6 @@ For hybrid runtimes, configured cache size is not automatically equivalent to ac
 - Current HiCache design: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/hicache_design.mdx
 - Current server arguments: https://github.com/sgl-project/sglang/blob/main/docs_new/docs/advanced_features/server_arguments.mdx
 - Current hybrid-cache assembly code: https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/unified_radix_cache.py
-- v0.5.11 CUDA-13 migration release: https://github.com/sgl-project/sglang/releases/tag/v0.5.11
-- CUDA migration tracker: https://github.com/sgl-project/sglang/issues/21498
 - Qwen3.5 hybrid HiCache transfer-path warning: https://github.com/sgl-project/sglang/issues/24121
 - Qwen3.5 hybrid `hicache-size` allocation warning: https://github.com/sgl-project/sglang/issues/29034
 - Qwen3.5 Mamba eviction-stall warning: https://github.com/sgl-project/sglang/issues/30314

@@ -20,7 +20,7 @@ end-to-end net benefit
 
 ## Runtime scope
 
-**SGLang HiCache 是本实验组的首选机制候选，不是当前已经验证可运行的 runtime baseline。**
+**SGLang HiCache 是本实验组的首选机制路径。**
 
 选择它的原因是当前 HiCache 同时提供：
 
@@ -31,9 +31,9 @@ end-to-end net benefit
 
 `direct` 作为 standard CUDA-copy baseline，`kernel` 作为 GPU-assisted I/O path。
 
-正式执行前必须先通过仓库 [`docs/TECHNICAL_BASELINE.md`](../../docs/TECHNICAL_BASELINE.md) 中定义的 cluster software/build gate，建立与当前集群兼容的 non-Docker CUDA-12 SGLang 环境。随后还必须通过 [`docs/00-common-conventions.md`](docs/00-common-conventions.md) 的 model/runtime/full-state capability gate。
+SGLang 必须使用独立 `envs/sglang` prefix，并与 `qwen` / `gemma4` 两个 vLLM 环境隔离。环境布局、加载规则和兼容性要求见 [`docs/ENVIRONMENT_REQUIREMENTS.md`](../../docs/ENVIRONMENT_REQUIREMENTS.md)。正式执行还必须通过 [`docs/00-common-conventions.md`](docs/00-common-conventions.md) 定义的 model/runtime/full-state capability gate，验证 exact checkpoint、attention backend、page-size support、HiCache effective configuration、`direct` / `kernel` path、hybrid-state restore 和数值一致性。
 
-Upstream feature availability 不能替代本地 execution validation。目标 hybrid model 如果不能验证完整 cache/state restore，则只能保留 mechanism-level / partial evidence，不能报告为完整 modern-hybrid serving result。
+Upstream feature availability 或环境 import 成功都不能替代 experiment-specific execution validation。目标 hybrid model 如果不能验证完整 cache/state restore，则只能保留 mechanism-level / partial evidence，不能报告为完整 modern-hybrid serving result。
 
 ## Scope
 
