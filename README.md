@@ -60,7 +60,7 @@ Qwen3.5 combines Gated DeltaNet recurrent/linear-attention layers with full-atte
 
 The full model × hardware cross-product is reserved for representative generalization configurations rather than repeating every experiment four times. Earlier A100 cross-model results are reused only when the full experiment contract is identical.
 
-Volatile architecture, runtime, hardware, cluster-software, granularity, and scheduler-semantics assumptions are maintained in [`docs/TECHNICAL_BASELINE.md`](docs/TECHNICAL_BASELINE.md). The deployed conda/runtime layout, pinned vLLM software stack, cluster loading convention, compatibility workarounds, and environment validation rules are maintained in [`docs/ENVIRONMENT_BASELINE.md`](docs/ENVIRONMENT_BASELINE.md).
+Volatile architecture, runtime, hardware, cluster-software, granularity, and scheduler-semantics assumptions are maintained in [`docs/TECHNICAL_BASELINE.md`](docs/TECHNICAL_BASELINE.md). Required conda/runtime layout, package versions, cluster loading convention, compatibility settings, and environment validation rules are maintained in [`docs/ENVIRONMENT_REQUIREMENTS.md`](docs/ENVIRONMENT_REQUIREMENTS.md).
 
 Exact checkpoint revisions, runtime versions/commits, resolved defaults, cache policies, scheduler mechanisms, and capability status must be pinned in every reported experiment.
 
@@ -72,9 +72,9 @@ Likewise, a current runtime option with a scheduler-related name is not automati
 
 Runtime selection follows the mechanism being evaluated rather than assuming one engine is suitable for every experiment group.
 
-The deployed baseline uses three isolated conda prefixes under `~/yanglihan/dl-stack/envs/`: `qwen` and `gemma4` for vLLM, and a separate pinned-source `sglang` environment for SGLang / HiCache. The two vLLM environments currently share Python 3.12.11, PyTorch `2.11.0+cu129`, vLLM `0.26.0+cu129`, Triton 3.6.0, and Transformers 5.14.1. SGLang dependencies are not mixed into the vLLM environments.
+The environment requirements define three isolated conda prefixes under `~/yanglihan/dl-stack/envs/`: `qwen` and `gemma4` for vLLM, and a separate pinned-source `sglang` environment for SGLang / HiCache. The two vLLM environments use Python 3.12.11, PyTorch `2.11.0+cu129`, vLLM `0.26.0+cu129`, Triton 3.6.0, and Transformers 5.14.1. SGLang dependencies must not be mixed into the vLLM environments.
 
-The Page Granularity and GPU-Assisted I/O group uses SGLang HiCache as the preferred mechanism path because it exposes explicit cache-page and direct/kernel I/O controls. The non-Docker SGLang environment is already established; formal measurements remain gated on experiment-specific model, hybrid-state, page-size, HiCache, and I/O-path validation on the exact pinned build.
+The Page Granularity and GPU-Assisted I/O group uses SGLang HiCache as the preferred mechanism path because it exposes explicit cache-page and direct/kernel I/O controls. Formal measurements remain gated on experiment-specific model, hybrid-state, page-size, HiCache, and I/O-path validation on the exact pinned build.
 
 The scheduler group uses Strata §4.3 as its mechanism reference. It separates short-distance/high-overlap delay-hit behavior from longer-distance host-loading pressure instead of assuming that all scheduler pathologies monotonically worsen as locality decreases.
 
@@ -92,4 +92,4 @@ See [`docs/REPOSITORY_RULES.md`](docs/REPOSITORY_RULES.md).
 
 Work in progress.
 
-Detailed experiment designs are specified for all six evaluation groups, including all three Model and Hardware Generalization experiments. The qwen, gemma4, and sglang serving environments are established as the current cluster baseline. Remaining execution gates concern experiment-specific runtime mechanisms, hybrid-state correctness, representative-point freezing, and measured results rather than basic environment creation.
+Detailed experiment designs are specified for all six evaluation groups, including all three Model and Hardware Generalization experiments. Implementation, mechanism validation, representative-point freezing, and measured results are added incrementally.
