@@ -2,7 +2,7 @@
 
 本目录用于存放 Page Granularity and GPU-Assisted I/O 实验实现。
 
-实现必须遵循 [`../docs/00-common-conventions.md`](../docs/00-common-conventions.md)。
+实现必须遵循 [`../docs/00-common-conventions.md`](../docs/00-common-conventions.md) 与仓库 [`../../../docs/ENVIRONMENT_REQUIREMENTS.md`](../../../docs/ENVIRONMENT_REQUIREMENTS.md)。
 
 ## Required responsibilities
 
@@ -27,8 +27,11 @@
 
 每个正式 run 必须显式写入配置或 metadata：
 
+- environment identifier / prefix；
 - model identifier / revision；
-- runtime commit；
+- runtime version / commit / build source；
+- Python / PyTorch version 与 PyTorch CUDA build；
+- relevant environment overrides；
 - attention backend；
 - `page_size`；
 - precision / cache dtype；
@@ -38,10 +41,10 @@
 - `hicache_write_policy`；
 - hybrid/recurrent-state tracking parameters；
 - scheduler / overlap controls；
-- hardware / NUMA / CPU-GPU topology；
+- hardware / driver / NUMA / CPU-GPU topology；
 - request trace identifier / seed。
 
-不得依赖未记录的 runtime defaults。
+不得依赖未记录的 runtime defaults，也不得在 paired comparison 之间静默切换 conda prefix、runtime build 或 compatibility override。
 
 如果使用非 SGLang runtime，代码必须分别记录 prefix-match granularity、physical cache block size、offload/transfer granularity 和 observed transfer size。不能把它们压缩成一个 generic `page_size` 字段。
 
