@@ -78,9 +78,12 @@ Do not rewrite published commits merely to obtain prettier commit history.
 
 Every experiment that contributes to a reported result should make it possible to recover:
 
+- environment identifier / conda prefix;
 - exact model identifier and model revision;
 - hardware platform and relevant CPU-GPU / NUMA topology;
-- GPU driver, CUDA/runtime, and serving-engine version or commit;
+- GPU driver, PyTorch CUDA build, and serving-engine version / commit / build source;
+- Python, PyTorch, and serving-runtime versions;
+- relevant environment overrides and compatibility settings;
 - model precision or quantization mode;
 - workload definition and exact token lengths;
 - relevant runtime configuration and feature flags;
@@ -94,6 +97,8 @@ Every experiment that contributes to a reported result should make it possible t
 - processing or plotting procedure.
 
 A plotted number should be traceable back to raw measurements rather than being copied manually into plotting code.
+
+Environment requirements are defined in [`ENVIRONMENT_REQUIREMENTS.md`](ENVIRONMENT_REQUIREMENTS.md). An experiment must not silently switch between `qwen`, `gemma4`, and `sglang` prefixes or omit a compatibility override that changes the effective runtime path.
 
 Features whose behavior is experimental or rapidly changing in the serving runtime must be validated on the pinned version before their measurements are interpreted as model behavior.
 
@@ -202,7 +207,7 @@ If a secret is committed accidentally, removing it in a later commit is not suff
 
 When an experiment design materially changes, update the corresponding documentation in the same development cycle.
 
-Keep the root [`README.md`](../README.md), `docs/EXPERIMENT_PLAN.md`, `docs/TECHNICAL_BASELINE.md`, and experiment-specific documentation synchronized with:
+Keep the root [`README.md`](../README.md), `docs/EXPERIMENT_PLAN.md`, `docs/TECHNICAL_BASELINE.md`, `docs/ENVIRONMENT_REQUIREMENTS.md`, and experiment-specific documentation synchronized with:
 
 - the questions being tested;
 - major experiment groups and design-completion status;
@@ -210,8 +215,9 @@ Keep the root [`README.md`](../README.md), `docs/EXPERIMENT_PLAN.md`, `docs/TECH
 - measurement semantics;
 - interpretation boundaries;
 - volatile runtime assumptions;
+- environment requirements;
 - runtime capability gates and unsupported configurations.
 
-When a volatile architecture/runtime/hardware fact is reverified, update the verification date and primary reference in `TECHNICAL_BASELINE.md` if the change affects project validity or runtime selection.
+When a volatile architecture/runtime/hardware fact is reverified, update the verification date and primary reference in `TECHNICAL_BASELINE.md` if the change affects project validity or runtime selection. When environment versions, runtime isolation, loading rules, or compatibility overrides change, update `ENVIRONMENT_REQUIREMENTS.md` in the same development cycle.
 
 The documentation describes the intended evidence. The code and raw measurements determine what was actually executed.
