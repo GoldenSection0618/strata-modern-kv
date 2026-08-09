@@ -8,7 +8,7 @@
 
 仓库统一使用 `KV/state` 作为 umbrella term。Attention KV、local/sliding-window KV、recurrent/linear-attention state 在 runtime 可观测时必须分项报告。
 
-当前模型、runtime、硬件和集群事实见 [`TECHNICAL_BASELINE.md`](TECHNICAL_BASELINE.md)。
+当前模型、runtime、硬件和集群事实见 [`TECHNICAL_BASELINE.md`](TECHNICAL_BASELINE.md)。环境隔离、包版本、compute-node 加载方式与 compatibility settings 见 [`ENVIRONMENT_REQUIREMENTS.md`](ENVIRONMENT_REQUIREMENTS.md)。
 
 ## 2. Experiment groups
 
@@ -61,7 +61,7 @@ Full hybrid-state restore 无法验证时，结果必须标记为 `partial` 或 
 
 Configured page size、prefix-match granularity、physical block size 与 actual transfer size 不得混为同一变量。
 
-SGLang HiCache 是主要 mechanism candidate，但必须先通过当前集群的 non-Docker build/runtime gate。
+SGLang HiCache 是主要 mechanism path。SGLang 必须使用独立 `envs/sglang` prefix 与项目固定源码 revision，并遵守 [`ENVIRONMENT_REQUIREMENTS.md`](ENVIRONMENT_REQUIREMENTS.md)。正式实验仍必须在 exact pinned build 上通过 checkpoint、attention backend、page-size、full hybrid-state restore、HiCache effective configuration 与 `direct` / `kernel` I/O path 等 mechanism-specific capability gate。
 
 详细设计位于 `experiments/page-granularity-gpu-assisted-io/`。
 
@@ -234,9 +234,12 @@ I/O inefficiency 从哪里来，修复代价是多少？
 
 每个正式实验至少记录：
 
+- environment identifier / prefix；
 - exact model identifier / revision；
 - hardware、CPU-GPU/NUMA topology；
-- driver、CUDA/runtime、serving-engine version/commit；
+- driver、PyTorch CUDA build、serving-engine version/commit/build source；
+- Python / PyTorch / serving-runtime version；
+- relevant environment overrides；
 - precision / cache dtype；
 - workload identifier、token-length convention 与 exact trace configuration；
 - cache residency / state policy；
