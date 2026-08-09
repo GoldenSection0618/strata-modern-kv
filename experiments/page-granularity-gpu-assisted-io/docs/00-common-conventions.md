@@ -14,9 +14,9 @@
 - `--hicache-mem-layout`：host cache memory layout；
 - `--hicache-write-policy`：GPU→CPU backup / write-back policy。
 
-项目已经建立独立的 `~/yanglihan/dl-stack/envs/sglang` 环境，并与 `qwen` / `gemma4` 两个 vLLM 环境隔离。该环境从固定源码 revision 安装，不能回退使用 vLLM prefix，也不能把 SGLang 依赖混装到两个 vLLM 环境。环境布局、加载规则和 cluster compatibility baseline 见 [`docs/ENVIRONMENT_BASELINE.md`](../../../docs/ENVIRONMENT_BASELINE.md)。
+SGLang 必须使用独立的 `~/yanglihan/dl-stack/envs/sglang` prefix，并与 `qwen` / `gemma4` 两个 vLLM 环境隔离。该环境必须从项目固定的源码 revision 安装，不能回退使用 vLLM prefix，也不能把 SGLang 依赖混装到两个 vLLM 环境。环境布局、加载规则和 compatibility requirements 见 [`docs/ENVIRONMENT_REQUIREMENTS.md`](../../../docs/ENVIRONMENT_REQUIREMENTS.md)。
 
-因此，本实验组不再把“建立 non-Docker CUDA-12-compatible SGLang 环境”作为待完成的 build gate。正式实验的剩余 gate 是 **mechanism-specific capability validation**：必须在实际 pinned build 上验证 checkpoint、native kernels、attention backend、page-size support、HiCache effective configuration、hybrid-state restore、`direct` / `kernel` I/O path 和数值一致性。
+正式实验还必须进行 **mechanism-specific capability validation**：在 exact pinned build 上验证 checkpoint、native kernels、attention backend、page-size support、HiCache effective configuration、hybrid-state restore、`direct` / `kernel` I/O path 和数值一致性。
 
 实验必须记录并固定精确的 SGLang version / commit。不得依赖 runtime 默认值，因为默认 backend、layout 或其他行为可能随版本变化。Upstream feature availability 或环境 import 成功都不能替代 experiment-specific execution validation。
 
