@@ -12,7 +12,7 @@
 
 # Experiment 3: Request-Rate Scaling
 # Usage: sbatch --export=MODEL=qwen,MODE=cpu_hit run_exp3.sbatch
-#        sbatch --export=MODEL=qwen,MODE=recompute,CONTROL=1 run_exp3.sbatch
+#        sbatch --export=MODEL=qwen,MODE=recompute,CONTROL=1,FROZEN_RATES=1.2,2.4,3.4,4.1,4.9,5.6,6.3 run_exp3.sbatch
 
 set -euo pipefail
 source "$HOME/yanglihan/env.sh"
@@ -22,6 +22,9 @@ source "$HOME/yanglihan/env.sh"
 # vLLM 0.26.0 enables VLLM_USE_FLASHINFER_SAMPLER by default, so we MUST
 # disable it here.
 export VLLM_USE_FLASHINFER_SAMPLER=0
+# Use spawn for the vLLM EngineCore subprocess: fork can fail with
+# "Cannot re-initialize CUDA in forked subprocess" when multiple vLLM
+# tasks share a node.
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 DL_ROOT="$HOME/yanglihan/dl-stack"
@@ -44,6 +47,9 @@ CONTROL="${CONTROL:-0}"
 
 # --- Calibration rates (comma-separated) ---
 CAL_RATES="${CAL_RATES:-0.5,1.0,2.0,4.0,6.0,8.0,12.0}"
+
+# --- Frozen sweep rates: reuse a previous calibration (skip calibration) ---
+FROZEN_RATES="${FROZEN_RATES:-}"
 
 # --- Model path resolution ---
 case "$MODEL" in
@@ -73,6 +79,12 @@ if [ "$CONTROL" = "1" ]; then
     CONTROL_ARG="--control-mode"
 fi
 
+# --- Frozen rates (skip calibration) ---
+FROZEN_ARG=""
+if [ -n "$FROZEN_RATES" ]; then
+    FROZEN_ARG="--skip-calibration --frozen-rates $FROZEN_RATES"
+fi
+
 # --- Output directory ---
 OUTPUT_DIR="$EXP_ROOT/results/exp3/${MODEL}/${CTX}-${MODE}"
 
@@ -83,6 +95,7 @@ echo "Context:   $CTX tokens (fixed)"
 echo "Prefix:    $RATIO (50%)"
 echo "Residency: $MODE"
 echo "Control:   $CONTROL"
+echo "Frozen:    ${FROZEN_RATES:-none (calibrate)}"
 echo "Output:    $OUTPUT_DIR"
 echo "Warmup:    $N_WARMUP, Measured: $N_MEASURED, Repeats: $N_REPEATS"
 echo "Concurrency ceiling: $CONCURRENCY"
@@ -106,7 +119,8 @@ python3 run_exp3.py \
     --gpu-memory-utilization "$GPU_UTIL" \
     --calibration-rates "$CAL_RATES" \
     $KV_OFFLOAD_ARG \
-    $CONTROL_ARG
+    $CONTROL_ARG \
+    $FROZEN_ARG
 
 echo ""
 echo "End: $(date -u +%Y-%m-%dT%H:%M:%SZ)"

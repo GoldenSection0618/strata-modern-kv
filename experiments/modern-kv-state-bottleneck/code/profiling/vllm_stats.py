@@ -1,7 +1,15 @@
 """vLLM internal statistics collection.
 
-Wraps KVCacheManager and Scheduler APIs to collect cache-related stats
-before and after each measured request.
+Captures SchedulerStats from the EngineCore output stream.  The V1 engine
+emits SchedulerStats on every step when log_stats is enabled, but does not
+expose the KV cache manager internals to the LLM client process (they live
+inside the EngineCore subprocess).  We therefore patch
+``engine_core.get_output()`` to record the latest stats without changing
+engine behaviour.
+
+Prefix cache stats and eviction events are per-step deltas (drained by the
+engine), so we accumulate them in the client.  ``kv_cache_usage`` is a
+snapshot value and is not accumulated.
 """
 
 from __future__ import annotations
@@ -18,15 +26,20 @@ logger = logging.getLogger(__name__)
 class KVStats:
     """Snapshot of vLLM internal cache statistics."""
 
-    # KV cache usage (0.0 – 1.0)
+    # KV cache usage (0.0 – 1.0), snapshot at last step
     usage: float
-    # Prefix cache stats
+    # Prefix cache stats (cumulative since collector start / last reset)
     prefix_requests: int
     prefix_queries: int
     prefix_hits: int
     prefix_preempted_requests: int
     prefix_preempted_queries: int
     prefix_preempted_hits: int
+    # Scheduler state (latest step)
+    num_running_reqs: int
+    num_waiting_reqs: int
+    # Cumulative number of KV cache eviction events (offload tier)
+    kv_eviction_events: int
     # Timestamp
     timestamp: float
 
@@ -35,59 +48,65 @@ class KVStats:
 
 
 class VLLMStatsCollector:
-    """Collects internal vLLM statistics from the engine.
-
-    Accesses the KVCacheManager and Scheduler through the engine's
-    internal attributes.  The exact attribute path may vary across
-    vLLM versions; this implementation targets vLLM 0.26.0 V1 engine.
-    """
+    """Collects SchedulerStats from the EngineCore output stream."""
 
     def __init__(self, llm):
         self.llm = llm
-        self._kv_manager = None
-        self._scheduler = None
-        self._log_stats = False
-        self._find_internals()
+        self._scheduler_stats: Any = None  # latest SchedulerStats
+        self._patched = False
+        self._accum = {
+            "prefix_requests": 0,
+            "prefix_queries": 0,
+            "prefix_hits": 0,
+            "prefix_preempted_requests": 0,
+            "prefix_preempted_queries": 0,
+            "prefix_preempted_hits": 0,
+            "kv_eviction_events": 0,
+        }
+        self._patch_get_output()
 
-    def _find_internals(self):
-        """Locate KVCacheManager and Scheduler in the engine."""
+    def _patch_get_output(self):
+        """Patch engine_core.get_output() to capture SchedulerStats."""
         engine = getattr(self.llm, "llm_engine", None)
         if engine is None:
             logger.warning("Cannot find llm_engine on LLM instance")
             return
-
-        # V1 engine stores scheduler in engine.scheduler or engine.engine_core
-        for attr in ("scheduler", "engine_core"):
-            obj = getattr(engine, attr, None)
-            if obj is not None:
-                # Try to find kv_cache_manager on the scheduler
-                kv_mgr = getattr(obj, "kv_cache_manager", None)
-                if kv_mgr is not None:
-                    self._kv_manager = kv_mgr
-                    self._scheduler = obj
-                    self._log_stats = getattr(obj, "log_stats", False) or True
-                    logger.info(
-                        "Found KVCacheManager on %s and Scheduler", attr
-                    )
-                    return
-
-        # Fallback: search deeper
         engine_core = getattr(engine, "engine_core", None)
-        if engine_core is not None:
-            scheduler = getattr(engine_core, "scheduler", None)
-            if scheduler is not None:
-                kv_mgr = getattr(scheduler, "kv_cache_manager", None)
-                if kv_mgr is not None:
-                    self._kv_manager = kv_mgr
-                    self._scheduler = scheduler
-                    self._log_stats = True
-                    logger.info("Found KVCacheManager via engine_core.scheduler")
-                    return
+        if engine_core is None:
+            logger.warning("Cannot find engine_core on llm_engine")
+            return
 
-        logger.warning(
-            "Could not locate KVCacheManager/Scheduler. "
-            "Internal stats will be empty."
-        )
+        orig_get_output = engine_core.get_output
+        collector = self
+
+        def patched_get_output(*args, **kwargs):
+            outputs = orig_get_output(*args, **kwargs)
+            ss = getattr(outputs, "scheduler_stats", None)
+            if ss is not None:
+                collector._scheduler_stats = ss
+                pcs = getattr(ss, "prefix_cache_stats", None)
+                if pcs is not None:
+                    acc = collector._accum
+                    acc["prefix_requests"] += int(getattr(pcs, "requests", 0) or 0)
+                    acc["prefix_queries"] += int(getattr(pcs, "queries", 0) or 0)
+                    acc["prefix_hits"] += int(getattr(pcs, "hits", 0) or 0)
+                    acc["prefix_preempted_requests"] += int(
+                        getattr(pcs, "preempted_requests", 0) or 0
+                    )
+                    acc["prefix_preempted_queries"] += int(
+                        getattr(pcs, "preempted_queries", 0) or 0
+                    )
+                    acc["prefix_preempted_hits"] += int(
+                        getattr(pcs, "preempted_hits", 0) or 0
+                    )
+                events = getattr(ss, "kv_cache_eviction_events", None)
+                if events:
+                    collector._accum["kv_eviction_events"] += len(events)
+            return outputs
+
+        engine_core.get_output = patched_get_output
+        self._patched = True
+        logger.info("Patched engine_core.get_output to capture SchedulerStats")
 
     def collect(self) -> KVStats:
         """Collect a snapshot of current cache statistics."""
@@ -99,39 +118,44 @@ class VLLMStatsCollector:
             prefix_preempted_requests=0,
             prefix_preempted_queries=0,
             prefix_preempted_hits=0,
+            num_running_reqs=0,
+            num_waiting_reqs=0,
+            kv_eviction_events=0,
             timestamp=time.perf_counter(),
         )
 
-        if self._kv_manager is not None:
-            try:
-                stats.usage = float(self._kv_manager.usage)
-            except Exception as e:
-                logger.debug("Failed to get usage: %s", e)
+        if not self._patched:
+            logger.warning("Stats collector not patched; stats unavailable")
+            return stats
 
-        if self._kv_manager is not None:
-            try:
-                pcs = self._kv_manager.make_prefix_cache_stats()
-                if pcs is not None:
-                    stats.prefix_requests = pcs.requests
-                    stats.prefix_queries = pcs.queries
-                    stats.prefix_hits = pcs.hits
-                    stats.prefix_preempted_requests = pcs.preempted_requests
-                    stats.prefix_preempted_queries = pcs.preempted_queries
-                    stats.prefix_preempted_hits = pcs.preempted_hits
-            except Exception as e:
-                logger.debug("Failed to get prefix cache stats: %s", e)
+        ss = self._scheduler_stats
+        if ss is None:
+            logger.warning(
+                "No SchedulerStats captured yet. "
+                "Ensure disable_log_stats=False."
+            )
+            return stats
+
+        try:
+            stats.usage = float(ss.kv_cache_usage)
+            stats.num_running_reqs = int(ss.num_running_reqs)
+            stats.num_waiting_reqs = int(ss.num_waiting_reqs)
+        except Exception as e:
+            logger.debug("Failed to parse scheduler fields: %s", e)
+
+        stats.prefix_requests = self._accum["prefix_requests"]
+        stats.prefix_queries = self._accum["prefix_queries"]
+        stats.prefix_hits = self._accum["prefix_hits"]
+        stats.prefix_preempted_requests = self._accum["prefix_preempted_requests"]
+        stats.prefix_preempted_queries = self._accum["prefix_preempted_queries"]
+        stats.prefix_preempted_hits = self._accum["prefix_preempted_hits"]
+        stats.kv_eviction_events = self._accum["kv_eviction_events"]
 
         return stats
 
     def reset_prefix_cache(self):
-        """Clear the prefix cache."""
-        if self._kv_manager is not None:
-            try:
-                self._kv_manager.reset_prefix_cache()
-                logger.info("Prefix cache reset via KVCacheManager")
-            except Exception as e:
-                logger.warning("Failed to reset prefix cache: %s", e)
-        elif self.llm is not None:
+        """Clear the prefix cache via the public LLM API (RPC)."""
+        if self.llm is not None:
             try:
                 self.llm.reset_prefix_cache()
                 logger.info("Prefix cache reset via LLM API")
@@ -139,5 +163,5 @@ class VLLMStatsCollector:
                 logger.warning("Failed to reset prefix cache via LLM: %s", e)
 
     def is_available(self) -> bool:
-        """Return True if internal stats collection is available."""
-        return self._kv_manager is not None
+        """Return True if scheduler stats are being captured."""
+        return self._patched and self._scheduler_stats is not None

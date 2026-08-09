@@ -72,25 +72,38 @@ def check_prefix_cache_consistency(runner, workload: TokenWorkload) -> tuple[str
 
 
 def check_gpu_resident_hit(runner, workload: TokenWorkload) -> tuple[str, bool, str]:
-    """Verify that GPU-resident prefix cache hit works."""
+    """Verify that GPU-resident prefix cache hit works.
+
+    The first warmup request populates the cache (no hit by definition);
+    a second request must then hit the cached prefix.  Prefix stats are
+    cumulative deltas drained from SchedulerStats, so we compare before /
+    after deltas.
+    """
     try:
         segment = workload.get_segment(0)
+        sp = runner.get_sampling_params(max_tokens=1)
+        prompt = segment.to_tokens_prompt()
 
-        # Reset and warmup
+        # Reset and warmup (populates the prefix cache)
         runner.reset_prefix_cache()
         runner.warmup_prefix(segment.prefix_ids)
+        before = runner.stats_collector.collect()
 
-        # Check stats
-        stats = runner.stats_collector.collect()
-        if stats.prefix_hits > 0:
+        # Second request should hit the cached prefix
+        runner.llm.generate([prompt], sp)
+        after = runner.stats_collector.collect()
+
+        hit_delta = after.prefix_hits - before.prefix_hits
+        query_delta = after.prefix_queries - before.prefix_queries
+        if hit_delta > 0:
             return (
                 "gpu_resident_hit", True,
-                f"hits={stats.prefix_hits}, queries={stats.prefix_queries}",
+                f"hit_delta={hit_delta}, query_delta={query_delta}",
             )
         else:
             return (
                 "gpu_resident_hit", False,
-                f"No hit detected: queries={stats.prefix_queries}, hits={stats.prefix_hits}",
+                f"No hit detected: query_delta={query_delta}, hit_delta={hit_delta}",
             )
     except Exception as e:
         return ("gpu_resident_hit", False, f"Exception: {e}")
@@ -99,42 +112,47 @@ def check_gpu_resident_hit(runner, workload: TokenWorkload) -> tuple[str, bool, 
 def check_cpu_resident_hit(runner, workload: TokenWorkload) -> tuple[str, bool, str]:
     """Verify that CPU-resident prefix cache hit works.
 
+    Warm up the prefix, evict it to the CPU tier, then send the real
+    request: the prefix must be restored (prefix hits increase) or the
+    eviction/restore path must show activity (eviction events /
+    preempted hits deltas).
+
     This check may fail if the runtime does not support KV offloading
     for the given model.  Failure here labels the condition as 'unsupported'.
     """
     try:
         segment = workload.get_segment(0)
+        sp = runner.get_sampling_params(max_tokens=1)
+        prompt = segment.to_tokens_prompt()
 
         # Reset, warmup, evict
         runner.reset_prefix_cache()
         runner.warmup_prefix(segment.prefix_ids)
         runner.evict_prefix_to_cpu(segment.prefix_ids)
+        before = runner.stats_collector.collect()
 
-        # Check eviction
-        stats_before = runner.stats_collector.collect()
-
-        # Send the real request
-        sp = runner.get_sampling_params(max_tokens=1)
-        prompt = segment.to_tokens_prompt()
+        # Send the real request: should restore prefix from CPU
         out = runner.llm.generate([prompt], sp)
+        after = runner.stats_collector.collect()
 
-        stats_after = runner.stats_collector.collect()
+        hit_delta = after.prefix_hits - before.prefix_hits
+        evict_delta = after.kv_eviction_events - before.kv_eviction_events
+        preempt_delta = (
+            after.prefix_preempted_hits - before.prefix_preempted_hits
+        )
 
-        # Check if restore happened: hits should increase or GPU memory should show spike
-        hit_after = stats_after.prefix_hits
-
-        if hit_after > 0 or stats_before.prefix_preempted_hits > 0:
+        if hit_delta > 0 or evict_delta > 0 or preempt_delta > 0:
             return (
                 "cpu_resident_hit", True,
-                f"preempted_hits={stats_before.prefix_preempted_hits}, "
-                f"hits_after={hit_after}",
+                f"hit_delta={hit_delta}, evict_events_delta={evict_delta}, "
+                f"preempted_hits_delta={preempt_delta}",
             )
         else:
             return (
                 "cpu_resident_hit", False,
-                f"No evidence of CPU restore: "
-                f"preempted_hits={stats_before.prefix_preempted_hits}, "
-                f"hits_after={hit_after}",
+                f"No evidence of CPU restore: hit_delta={hit_delta}, "
+                f"evict_events_delta={evict_delta}, "
+                f"preempted_hits_delta={preempt_delta}",
             )
     except Exception as e:
         return ("cpu_resident_hit", False, f"Exception: {e}")

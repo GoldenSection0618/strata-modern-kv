@@ -16,6 +16,7 @@ import asyncio
 import logging
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -126,6 +127,14 @@ class AsyncLoadDriver:
         semaphore = asyncio.Semaphore(self.config.concurrency_ceiling)
         t0 = time.perf_counter()
 
+        # Dedicated executor sized to the concurrency ceiling so that the
+        # thread pool does not cap achievable active concurrency below the
+        # configured ceiling.
+        executor = ThreadPoolExecutor(
+            max_workers=max(self.config.concurrency_ceiling, 1)
+        )
+        loop = asyncio.get_event_loop()
+
         async def send_one(req_id: int, arrival_time: float, prompt: dict):
             # Wait until the scheduled arrival time
             target = t0 + arrival_time
@@ -139,18 +148,12 @@ class AsyncLoadDriver:
             async with semaphore:
                 t_start = time.perf_counter()
 
-                # Use vLLM's async generate (via thread pool for sync LLM)
-                loop = asyncio.get_event_loop()
-                t_first_token_holder = {"val": None}
-
                 def _generate():
-                    outputs = self.llm.generate([prompt], self.sampling_params)
-                    return outputs
+                    return self.llm.generate([prompt], self.sampling_params)
 
-                # vLLM's LLM.generate is synchronous; run in executor
-                # We approximate t_first_token as the completion time
-                # since max_tokens=1 means first token = completion.
-                outputs = await loop.run_in_executor(None, _generate)
+                # vLLM's sync LLM.generate runs in the executor; with
+                # max_tokens=1 the first token == completion.
+                await loop.run_in_executor(executor, _generate)
 
                 t_first_token = time.perf_counter()
                 t_complete = t_first_token  # max_tokens=1: same
@@ -170,7 +173,10 @@ class AsyncLoadDriver:
             prompt = self.prompts[i % len(self.prompts)]
             tasks.append(asyncio.create_task(send_one(i, arrival, prompt)))
 
-        await asyncio.gather(*tasks)
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            executor.shutdown(wait=True)
 
         # Sort by request_id for deterministic output
         records.sort(key=lambda r: r.request_id)
@@ -209,14 +215,21 @@ def summarize_records(records: list[RequestRecord]) -> dict:
     duration = t_max - t_min
     achieved_throughput = len(records) / duration if duration > 0 else 0
 
+    # Mean active concurrency via Little's law:
+    #   L = arrival_rate * mean_service_time
+    #     = (n / duration_s) * (sum(service_ms) / n) / 1000
+    #     = sum(service_ms) / (duration_s * 1000)
+    if duration > 0:
+        active_concurrency_mean = sum(services) / (duration * 1000)
+    else:
+        active_concurrency_mean = 0.0
+
     return {
         "n_requests": n,
         "offered_rate": len(records) / duration if duration > 0 else 0,
         "achieved_throughput": round(achieved_throughput, 3),
         "active_concurrency_max": max_concurrency,
-        "active_concurrency_mean": round(
-            sum(services) / max(duration * 1000, 1) * n, 2
-        ),
+        "active_concurrency_mean": round(active_concurrency_mean, 2),
         "ttft_p50_ms": round(percentile(ttfts, 0.50), 3),
         "ttft_p90_ms": round(percentile(ttfts, 0.90), 3),
         "ttft_p99_ms": round(percentile(ttfts, 0.99), 3),

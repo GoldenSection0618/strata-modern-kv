@@ -88,6 +88,10 @@ class VLLMRunner:
             kv_cache_metrics=kv_cache_metrics,
             enable_prefix_caching=(residency_mode != "recompute"),
             cpu_offload_gb=cpu_offload_gb,
+            # SchedulerStats (kv cache usage, prefix cache hits/evictions)
+            # are only emitted when log_stats is enabled.  vLLM 0.26
+            # defaults disable_log_stats=True, so we must override it.
+            disable_log_stats=False,
         )
 
         # Qwen3.5 has Mamba layers: each decode sequence needs 1 Mamba cache
@@ -161,15 +165,11 @@ class VLLMRunner:
         logger.info("Warmup: sending prefix-only request (%d tokens)", len(prefix_ids))
         self.llm.generate([prompt], sp)
 
-        # Verify cache hit
         stats = self.stats_collector.collect()
-        if stats.prefix_hits > 0:
-            logger.info("Warmup confirmed: prefix_hits=%d", stats.prefix_hits)
-        else:
-            logger.warning(
-                "Warmup: no prefix cache hit detected (queries=%d, hits=%d)",
-                stats.prefix_queries, stats.prefix_hits,
-            )
+        logger.info(
+            "Warmup complete: cumulative prefix stats queries=%d, hits=%d",
+            stats.prefix_queries, stats.prefix_hits,
+        )
 
     def evict_prefix_to_cpu(self, prefix_ids: list[int]):
         """Apply GPU memory pressure to offload the prefix to CPU.
@@ -202,8 +202,9 @@ class VLLMRunner:
         # Check if eviction occurred
         stats = self.stats_collector.collect()
         logger.info(
-            "After eviction: usage=%.3f, preempted_reqs=%d, preempted_hits=%d",
-            stats.usage, stats.prefix_preempted_requests, stats.prefix_preempted_hits,
+            "After eviction: usage=%.3f, evict_events=%d, preempted_hits=%d, hits=%d",
+            stats.usage, stats.kv_eviction_events,
+            stats.prefix_preempted_hits, stats.prefix_hits,
         )
 
     def reset_state(self):

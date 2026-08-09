@@ -363,26 +363,38 @@ def run_single(
 
     # --- Control mode: only representative points ---
     if control_mode:
-        # Select: low (0.25), near-saturation (1.00), overload (1.30)
-        # Map normalized loads to indices
-        target_loads = [0.25, 1.00, 1.30]
-        filtered = []
-        for tl in target_loads:
-            # Find closest normalized load
-            best_idx = min(
-                range(len(normalized_loads)),
-                key=lambda i: abs(normalized_loads[i] - tl),
-            )
-            filtered.append(best_idx)
-        # Deduplicate while preserving order
-        seen = set()
-        filtered_unique = []
-        for idx in filtered:
-            if idx not in seen:
-                seen.add(idx)
-                filtered_unique.append(idx)
-        sweep_rates = [sweep_rates[i] for i in filtered_unique]
-        normalized_loads = [normalized_loads[i] for i in filtered_unique]
+        if frozen_sweep_rates:
+            # Frozen rates from the primary (cpu_hit) calibration.
+            # normalized_loads are placeholders here, so select by position:
+            # low / near-saturation / overload.
+            n_rates = len(sweep_rates)
+            if n_rates >= 3:
+                idxs = sorted({0, n_rates // 2, n_rates - 1})
+            else:
+                idxs = list(range(n_rates))
+            sweep_rates = [sweep_rates[i] for i in idxs]
+            normalized_loads = [normalized_loads[i] for i in idxs]
+        else:
+            # Select: low (0.25), near-saturation (1.00), overload (1.30)
+            # Map normalized loads to indices
+            target_loads = [0.25, 1.00, 1.30]
+            filtered = []
+            for tl in target_loads:
+                # Find closest normalized load
+                best_idx = min(
+                    range(len(normalized_loads)),
+                    key=lambda i: abs(normalized_loads[i] - tl),
+                )
+                filtered.append(best_idx)
+            # Deduplicate while preserving order
+            seen = set()
+            filtered_unique = []
+            for idx in filtered:
+                if idx not in seen:
+                    seen.add(idx)
+                    filtered_unique.append(idx)
+            sweep_rates = [sweep_rates[i] for i in filtered_unique]
+            normalized_loads = [normalized_loads[i] for i in filtered_unique]
         logger.info("Control mode: selected rates %s (loads %s)", sweep_rates, normalized_loads)
 
     # --- Phase 2: Formal sweep ---
