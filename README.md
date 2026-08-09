@@ -60,7 +60,9 @@ Qwen3.5 combines Gated DeltaNet recurrent/linear-attention layers with full-atte
 
 The full model × hardware cross-product is reserved for representative generalization configurations rather than repeating every experiment four times. Earlier A100 cross-model results are reused only when the full experiment contract is identical.
 
-Volatile architecture, runtime, hardware, cluster-software, granularity, and scheduler-semantics assumptions are maintained in [`docs/TECHNICAL_BASELINE.md`](docs/TECHNICAL_BASELINE.md). Exact checkpoint revisions, runtime versions/commits, resolved defaults, cache policies, scheduler mechanisms, and capability status must be pinned in every reported experiment.
+Volatile architecture, runtime, hardware, cluster-software, granularity, and scheduler-semantics assumptions are maintained in [`docs/TECHNICAL_BASELINE.md`](docs/TECHNICAL_BASELINE.md). The deployed conda/runtime layout, pinned vLLM software stack, cluster loading convention, compatibility workarounds, and environment validation rules are maintained in [`docs/ENVIRONMENT_BASELINE.md`](docs/ENVIRONMENT_BASELINE.md).
+
+Exact checkpoint revisions, runtime versions/commits, resolved defaults, cache policies, scheduler mechanisms, and capability status must be pinned in every reported experiment.
 
 A configured offload path is not automatically considered a valid full hierarchy. Hybrid-model experiments must verify that every state group needed to skip the claimed recomputation is correctly restored.
 
@@ -70,7 +72,9 @@ Likewise, a current runtime option with a scheduler-related name is not automati
 
 Runtime selection follows the mechanism being evaluated rather than assuming one engine is suitable for every experiment group.
 
-The Page Granularity and GPU-Assisted I/O group uses SGLang HiCache as the preferred mechanism candidate because it exposes explicit cache-page and direct/kernel I/O controls. This path remains conditional on establishing a non-Docker CUDA-12.x-compatible build for the current A100 cluster and passing the experiment-specific runtime/state validation gate.
+The deployed baseline uses three isolated conda prefixes under `~/yanglihan/dl-stack/envs/`: `qwen` and `gemma4` for vLLM, and a separate pinned-source `sglang` environment for SGLang / HiCache. The two vLLM environments currently share Python 3.12.11, PyTorch `2.11.0+cu129`, vLLM `0.26.0+cu129`, Triton 3.6.0, and Transformers 5.14.1. SGLang dependencies are not mixed into the vLLM environments.
+
+The Page Granularity and GPU-Assisted I/O group uses SGLang HiCache as the preferred mechanism path because it exposes explicit cache-page and direct/kernel I/O controls. The non-Docker SGLang environment is already established; formal measurements remain gated on experiment-specific model, hybrid-state, page-size, HiCache, and I/O-path validation on the exact pinned build.
 
 The scheduler group uses Strata §4.3 as its mechanism reference. It separates short-distance/high-overlap delay-hit behavior from longer-distance host-loading pressure instead of assuming that all scheduler pathologies monotonically worsen as locality decreases.
 
@@ -88,6 +92,4 @@ See [`docs/REPOSITORY_RULES.md`](docs/REPOSITORY_RULES.md).
 
 Work in progress.
 
-Detailed experiment designs are now specified for all six evaluation groups, including all three Model and Hardware Generalization experiments.
-
-Implementation, pinned-runtime validation, representative-point freezing, and measured results will be added incrementally. The generalization experiments remain execution-gated by validated results from the earlier groups and by per-platform runtime/state capability checks.
+Detailed experiment designs are specified for all six evaluation groups, including all three Model and Hardware Generalization experiments. The qwen, gemma4, and sglang serving environments are established as the current cluster baseline. Remaining execution gates concern experiment-specific runtime mechanisms, hybrid-state correctness, representative-point freezing, and measured results rather than basic environment creation.
