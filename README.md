@@ -58,7 +58,8 @@ See [docs/REPOSITORY_RULES.md](docs/REPOSITORY_RULES.md).
 
 ## Status
 
-Work in progress (last updated 2026-08-09).
+Work in progress (last verified 2026-08-18; detailed run ledger:
+`experiments/modern-kv-state-bottleneck/docs/05-current-status.md`).
 
 Current state of the Modern KV / State Bottleneck Profiling group:
 

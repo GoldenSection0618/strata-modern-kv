@@ -139,6 +139,12 @@ before the pinned Qwen3.5 hybrid evidence fallback and full write-through
 eviction preparation were implemented. Slurm `COMPLETED` alone did not make
 their failed validation outputs usable.
 
+Later experiment evidence, including the Gemma tokenizer fallback and the
+validated 32K TP=2 launch, is intentionally recorded in the experiment ledger
+(`../../docs/05-current-status.md`) rather than duplicated here. The test
+counts above describe the Qwen-era environment validation; use the result
+ledger and each run's `validation.json` for current measurement validity.
+
 ## 7. Boundaries
 
 - No Docker, Podman, Singularity, system driver changes, `/usr/local/cuda`

@@ -54,7 +54,7 @@ code/
 ├── run_exp1.py / run_exp1.sbatch / submit_exp1.sh
 ├── run_exp2.py / run_exp2.sbatch / submit_exp2.sh
 ├── run_exp3.py / run_exp3.sbatch / submit_exp3.sh
-├── sglang/                      # SGLang / HiCache 执行路径（Exp1-3，见下节）
+├── sglang_hicache/              # SGLang / HiCache 执行路径（Exp1-3，见下节）
 ├── envs/sglang/                 # canonical SGLang 环境方案与已执行的 bootstrap
 └── tests/                       # 纯 Python 单元测试
 ```
@@ -89,29 +89,21 @@ code/envs/sglang/                             # canonical 环境方案与非破�
 code/tests/                                   # 纯 Python 单元测试（无 CUDA/网络/权重）
 ```
 
-### SGLang 用法
+### 安全运行入口
+
+不要在登录节点直接执行 Python、测试、分析或模型 runner。即使纯 Python 测试也
+必须通过完整 sbatch 文件进入计算节点。现有 SGLang 单元测试入口为：
 
 ```bash
-# 单元测试（纯 stdlib，无 CUDA/网络）
-bash code/tests/run_tests.sh
-
-# 单点运行（默认使用 canonical prefix；也可用 PYTHON_BIN 覆盖）
-PYTHON_BIN=$DL_ROOT/envs/sglang-hicache-cu129-torch211/bin/python python3 code/sglang_hicache/run_exp1.py \
-    --model qwen --model-path $DL_ROOT/cache/huggingface/models--Qwen--Qwen3.5-9B \
-    --context-length 4096 --residency recompute \
-    --output-dir results/sglang/exp1/qwen/4096 --log-dir logs
-
-# SLURM 提交（A100；smoke 参数与 full sweep 分离；每次运行独立 run-<tag> 目录）
-SMOKE=1 bash code/sglang_hicache/sbatch/submit_exp1_sglang.sh qwen smoke
-bash code/sglang_hicache/sbatch/submit_exp1_sglang.sh qwen
-bash code/sglang_hicache/sbatch/submit_exp2_sglang.sh qwen
-bash code/sglang_hicache/sbatch/submit_exp3_sglang.sh qwen primary
-FROZEN_RATES=1.2,2.4,3.4,4.1,4.9,5.6,6.3 bash code/sglang_hicache/sbatch/submit_exp3_sglang.sh qwen control
-
-# Exp3 双 control gate 通过后，将完整 Exp1 + Exp2 串成单测量链
-ROOT_DEPENDENCY=afterok:<recompute-gate-job>:<gpu-hit-gate-job> \
-NODELIST=smtg5001 bash code/sglang_hicache/submit_exp1_exp2_serial.sh
+sbatch code/slurm-test-sglang-evidence.sbatch
 ```
+
+实际 Exp1–3 只通过 `code/sglang_hicache/sbatch/` 中的完整 `ylh-` sbatch
+文件或其提交器运行。每个实际运行都在独立 `run-<tag>` 目录中写入结果，且必须
+先通过 `validation.json`；Exp3 还必须通过 residency-dominance gate。Qwen
+正式 Exp1/2/3 已完成，不能把下述提交器当作重新执行全量 Qwen 的默认操作；当前
+有效数据、Gemma 的定向重跑范围与所有作业清单以
+`../docs/05-current-status.md` 为准。
 
 正式 Qwen 配置固定为 `HICACHE_RATIO=3`、`HICACHE_IO_BACKEND=direct`、
 `HICACHE_MEM_LAYOUT=page_first_direct`。串行提交器一次提交 Exp1 的 12 项和
@@ -121,54 +113,12 @@ Exp2 的 13 项，但通过逐项 `afterok` 保证任意时刻只有一个测量
 
 SGLang 结果写入 `results/sglang/exp{1,2,3}/`，每次运行落在独立的 `run-<tag>` 目录（UTC 时间戳 + SLURM job id，可用 `RUN_TAG` 覆盖）内，raw/summary/validation/metadata 分离与 vLLM 路径一致，分析脚本（`exp{1,2}_analysis.py`、`exp4_synthesis.py`）通过递归查找直接指向对应目录。Exp3 使用确定性前缀池（`prefix_pool_size` 个互异前缀族 + `hit_dominance_threshold` 支配判定，均固定在 metadata 与 sbatch）。
 
-## Usage
+## Legacy vLLM and analysis
 
-### Single run
+`run_exp*.py`、`runners/` 和 `analysis/` 保留为 legacy/reference 或离线处理
+实现，不能作为登录节点命令示例。需要重新执行或处理数据时，应先创建并审阅最小
+资源的完整 CPU/GPU sbatch 文件；不得用 `python3 ...` 直接在登录节点启动。
 
-```bash
-source ~/yanglihan/env.sh
-module load miniforge3/24.11.2_1
-
-python3 code/run_exp1.py \
-    --model qwen \
-    --model-path $DL_ROOT/cache/huggingface/models--Qwen--Qwen3.5-9B \
-    --context-length 4096 \
-    --residency recompute \
-    --output-dir results/exp1/qwen/4096/recompute/
-```
-
-### SLURM submission
-
-```bash
-# Single job
-MODEL=qwen CTX=4096 MODE=recompute sbatch -J ylh-exp1-qwen-4k-recmp code/run_exp1.sbatch
-
-# All jobs for a model
-bash code/submit_exp1.sh qwen
-```
-
-### Analysis
-
-```bash
-python3 code/analysis/exp1_analysis.py \
-    --input-dir results/exp1/qwen/ \
-    --output-dir results/exp1/processed/
-```
-
-### Experiment 4 (cross-model synthesis)
-
-```bash
-# 跨模型综合：读 exp1/exp2/exp3 的 summary.json → processed CSV
-python3 code/analysis/exp4_synthesis.py \
-    --exp1-dir results/exp1/ \
-    --exp2-dir results/exp2/ \
-    --exp3-dir results/exp3/ \
-    --output-dir results/exp4/processed/
-
-# 生成 4 组跨模型图（需要 matplotlib，服务器 qwen env 未安装）
-python3 code/analysis/exp4_figures.py \
-    --input-dir results/exp4/processed/ \
-    --output-dir results/exp4/figures/
-```
-
-exp4 只复用 exp1/2/3 的结果，不产生新测量。`exp4_synthesis.py` 自动归一化模型标识（qwen/Qwen3.5-9B → qwen），exp1 的 prefix_ratio 按设计固定 0.5；缺失的 mode（如 gpu_hit/cpu_hit 尚无数据）在 CSV 中留空并在 `synthesis_report.json` 记录可用性，不中断。
+Exp4 只复用 Exp1–3 的结果，不产生新测量。`exp4_synthesis.py` 自动归一化模型
+标识；缺失或 validation 未通过的 mode 必须在 processed 输出中保持为空，并在
+`synthesis_report.json` 中记录可用性，不能补零或推断。
