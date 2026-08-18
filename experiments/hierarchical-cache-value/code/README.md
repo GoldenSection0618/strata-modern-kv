@@ -24,6 +24,76 @@ sglang.launch_server` always resolves the installed upstream module).
 
 No fallback to `envs/sglang`, `envs/sglang-cu129`, `qwen` or `gemma4`.
 
+## Handoff execution contract
+
+This section is the complete handoff surface for continuing the formal
+measurement phase on another same-configuration A100 node.  Use the
+checked-in JSON and sbatch files as the authority; do not reconstruct a
+server command by hand or transplant a smoke result into the formal set.
+The completed gate/smoke evidence and its boundary are in
+[`../docs/05-current-status.md`](../docs/05-current-status.md).
+
+### Frozen model and workload defaults
+
+| Field | Experiments 1--3 | Experiment 4 |
+|---|---|---|
+| primary model / config | `Qwen/Qwen3.5-9B` / `configs/exp1.json`, `exp2.json`, `exp3.json` | `google/gemma-4-12B-it` / `configs/exp4.json` |
+| architecture cells | paired `gpu_only` and `hierarchical` | paired `gpu_only` and `hierarchical` within V0/V1/V2 |
+| trace seed / shape | seed `20260813`; 16 prefix families × 24 requests; prefix 512; suffix 16--64; output 1 | same |
+| serving load | concurrency 4; warm-up 128; request count is trace-derived | same |
+| baseline GPU fraction | `0.85`; Exp2 calibration selects the formal pressure points | `V0=0.85`, `V1=0.75`, `V2=0.75` through the matched-budget rule |
+| formal repetitions | `n_repeats=3` | `n_repeats=2` |
+| hierarchy runtime | page size 64; `direct`; `page_first_direct`; `write_through`; `hicache-ratio=3` | same |
+
+The formal Exp2 calibration is part of the formal run and must be rerun
+before its pressure cells.  Its output is then the prerequisite for Exp3.
+Exp4 must wait for the completed formal primary Exp2/Exp3 evidence and
+processing before freezing V0/V1/V2; the Gemma matched budgets above are
+not Qwen pressure fractions.
+
+### Slurm contract and selectors
+
+All real Exp1--4 runners request one A100 through the same contract:
+
+| Setting | Value |
+|---|---|
+| partition / account | `i56m512A100` / `humx_lab` |
+| allocation | 1 node, 1 GPU, 8 CPUs, 96 GB memory, 4 hours |
+| job and log policy | `ylh-hcv-*`; `$HOME/logs/%x-%j.out` and `.err` |
+| node selection | no node is hard-coded; any compatible A100 node may run the job |
+| environment and artifacts | each sbatch sources `$HOME/yanglihan/env.sh`, then `sbatch/common_env.sh`; raw results use unique run directories under `../results/` |
+
+Moving only to another same-configuration A100 does not require rebuilding
+the prefix or repeating the complete smoke suite. `DRY_RUN=1` is an
+optional Slurm-side handoff check; every real job already performs the
+compute-node provenance and BF16/JIT preflight. A changed driver, runtime
+prefix, checkpoint revision, or cache mechanism is a new validation
+condition and requires the relevant full gate before formal measurement.
+
+The submit wrappers sequence dependent cells with `afterok`; run them from
+`code/sbatch` and leave `SMOKE` unset for formal measurements:
+
+```bash
+cd /share01/hpc/humxlab_intern/yanglihan/dl-stack/projects/strata-modern-kv-hcache/experiments/hierarchical-cache-value/code/sbatch
+
+# Formal primary-model sequence.  Wait for each dependency chain to finish
+# successfully before starting the next command.
+bash submit_exp1.sh
+bash submit_exp2.sh       # calibration + Low/Medium/High paired cells
+bash submit_exp3.sh       # requires the completed formal Exp2 calibration
+
+# Run processing after Exp1--3, then freeze and execute the secondary model.
+bash submit_analysis.sh analysis
+bash submit_exp4.sh       # freeze V0/V1/V2, then Gemma paired cells
+```
+
+Supported narrow selectors are `MODEL`, `ARCH`, `STATE`, `PRESSURE`,
+`REUSE`, `LEVELS`, `CELL_LIMIT`, `CONCURRENCY`, `ROOT_DEPENDENCY`, and
+`RUN_TAG` where the corresponding wrapper/runner accepts them.  They are
+for an explicitly scoped rerun or diagnosis, not for silently changing the
+formal matrix.  `SMOKE=1` changes the workload and is never part of a
+formal result.
+
 ## Layout
 
 ```text
