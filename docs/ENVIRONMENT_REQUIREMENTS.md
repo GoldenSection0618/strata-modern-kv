@@ -1,6 +1,6 @@
 # Environment Requirements
 
-> Verified against the project environment configuration on 2026-08-09.
+> Verified against the project environment configuration on 2026-08-10.
 
 This document defines the environment requirements used by this repository. It records the expected runtime layout, package versions, compatibility settings, and validation procedure. Experiment-level mechanism validation remains separate: satisfying these environment requirements does not by itself prove that a hierarchical-cache, hybrid-state restore, page-size, I/O, or scheduler mechanism is valid.
 
@@ -12,16 +12,17 @@ Serving runtimes use separate conda prefixes under:
 ~/yanglihan/dl-stack/envs/
 ├── qwen
 ├── gemma4
-└── sglang
+└── sglang-hicache-cu129-torch211
 ```
 
 Required separation:
 
 - `envs/qwen` is the vLLM environment for `Qwen/Qwen3.5-9B`.
 - `envs/gemma4` is the vLLM environment for `google/gemma-4-12B-it`.
-- `envs/sglang` is dedicated to SGLang / HiCache and must be installed from the project-pinned source revision.
+- `envs/sglang-hicache-cu129-torch211` is the canonical SGLang / HiCache environment for the current KV/state and hierarchical-cache experiments.
 - SGLang dependencies must not be installed into either vLLM environment.
 - SGLang experiments must not fall back to `envs/qwen` or `envs/gemma4`.
+- The older `envs/sglang` and partial `envs/sglang-cu129` prefixes are retained as failure evidence and must not be selected, repaired in place, or deleted by experiment runners.
 
 ## 2. vLLM software stack
 
@@ -149,7 +150,36 @@ The resolved dependency must be CUDA 12 rather than `libcudart.so.13`.
 
 ## 9. SGLang / HiCache requirements
 
-SGLang / HiCache must use the dedicated `envs/sglang` prefix and the project-pinned source revision. Do not mix SGLang and vLLM dependencies.
+SGLang / HiCache experiments must use:
+
+```text
+prefix: /share01/hpc/humxlab_intern/yanglihan/dl-stack/envs/sglang-hicache-cu129-torch211
+SGLang: 0.5.6.post3.dev8468+g4ad990ba7
+installed commit: 4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63
+PyTorch: 2.11.0+cu129
+sglang-kernel: 0.4.5+cu129
+sgl-deep-gemm: 0.1.5.post1+cu129
+cuda-nvcc: 12.9.86
+host compiler: g++ 12.4.0
+```
+
+The read-only clone at `~/yanglihan/dl-stack/projects/sglang` remains a reference checkout at `7120f3ee13de565cc737e0598110e7f7603c4e9f`; it is not the installed source revision. The installed build is pinned immediately before the upstream CUDA-13 / PyTorch-2.13 migration. Do not mix SGLang and vLLM dependencies.
+
+Every SGLang sbatch file must set the canonical prefix and its user-space JIT toolchain before starting the server:
+
+```bash
+export SGLANG_ENV_DIR="$DL_ROOT/envs/sglang-hicache-cu129-torch211"
+export PYTHON_BIN="$SGLANG_ENV_DIR/bin/python"
+export SGLANG_COMMIT="4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63"
+export CUDA_HOME="$SGLANG_ENV_DIR"
+export CC="$SGLANG_ENV_DIR/bin/x86_64-conda-linux-gnu-gcc"
+export CXX="$SGLANG_ENV_DIR/bin/x86_64-conda-linux-gnu-g++"
+export CUDACXX="$SGLANG_ENV_DIR/bin/nvcc"
+export NVCC_CCBIN="$CXX"
+export LIBRARY_PATH="$SGLANG_ENV_DIR/targets/x86_64-linux/lib/stubs${LIBRARY_PATH:+:$LIBRARY_PATH}"
+```
+
+The prefix must provide matching `sglang_commit.txt`, `provenance.json`, `pip_freeze.txt`, `conda_list.txt`, `cu129_complete.txt`, and `jit_toolchain_complete.txt` evidence. A real BF16 operation and the C++20/CUDA JIT checks run on a Slurm compute node; login-node import or compilation is not an acceptable substitute.
 
 For formal experiments, the pinned SGLang build must additionally pass the mechanism-specific checks required by the relevant experiment, including as applicable:
 
@@ -170,7 +200,7 @@ Environment conformance and mechanism capability are separate validation layers.
 
 Every formal run must record at least:
 
-- environment identifier: `qwen`, `gemma4`, or `sglang`;
+- environment identifier: `qwen`, `gemma4`, or `sglang-hicache-cu129-torch211`;
 - exact model identifier and revision;
 - runtime version / source commit / build artifact;
 - Python, PyTorch, Triton, Transformers, and serving-runtime versions when applicable;

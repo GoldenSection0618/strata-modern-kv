@@ -1,6 +1,6 @@
 # Technical Baseline
 
-> Last verified: 2026-08-09
+> Last verified: 2026-08-10
 
 This document records volatile model-architecture, runtime, hardware, and project-environment facts that affect experiment validity. Environment layout, package versions, compatibility settings, and compute-node loading rules are defined in [`ENVIRONMENT_REQUIREMENTS.md`](ENVIRONMENT_REQUIREMENTS.md). Every reported run must still record its exact checkpoint revision, runtime commit/version, driver, CUDA/runtime, cache configuration, scheduler configuration, and capability status.
 
@@ -81,13 +81,14 @@ The required serving environments are isolated under:
 ~/yanglihan/dl-stack/envs/
 ├── qwen
 ├── gemma4
-└── sglang
+└── sglang-hicache-cu129-torch211
 ```
 
 - `qwen` and `gemma4` are vLLM environments.
-- `sglang` is dedicated to SGLang / HiCache and uses the project-pinned source revision.
+- `sglang-hicache-cu129-torch211` is the canonical SGLang / HiCache environment and uses installed commit `4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63`.
 - SGLang dependencies must not be installed into the two vLLM environments.
 - SGLang experiments must not fall back to a vLLM prefix.
+- The older `sglang` and partial `sglang-cu129` prefixes are failure evidence, not runnable fallbacks.
 
 Exact loading and recovery rules are defined in [`ENVIRONMENT_REQUIREMENTS.md`](ENVIRONMENT_REQUIREMENTS.md).
 
@@ -131,7 +132,11 @@ A `sitecustomize.py` change to `LD_LIBRARY_PATH` is not an acceptable substitute
 
 ### 3.4 SGLang package baseline
 
-SGLang / HiCache must use the independent `envs/sglang` prefix and the project-pinned source revision. Current upstream CUDA/package defaults must not be copied into the experiment environment without checking them against the pinned project revision and the cluster constraints.
+SGLang / HiCache must use the independent `envs/sglang-hicache-cu129-torch211` prefix. Its validated baseline is SGLang `0.5.6.post3.dev8468+g4ad990ba7` at commit `4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63`, PyTorch `2.11.0+cu129`, `sglang-kernel 0.4.5+cu129`, `sgl-deep-gemm 0.1.5.post1+cu129`, prefix-local CUDA nvcc `12.9.86`, and prefix-local g++ `12.4.0`.
+
+The read-only `projects/sglang` checkout at `7120f3ee13de565cc737e0598110e7f7603c4e9f` is a reference tree, not the installed revision. The installed commit was selected before the upstream CUDA-13 / PyTorch-2.13 migration because that newer default stack is not compatible with the cluster's driver-525 A100 runtime. Docker and system CUDA/driver modifications are not used.
+
+The canonical prefix has passed real A100 BF16 execution, C++20/CUDA JIT compilation, FlashInfer startup linking, public metrics, and Exp1-3 smoke validation. These checks establish environment conformance, not full-hierarchy capability for every state group.
 
 Environment conformance is separate from mechanism capability. Before SGLang contributes a mechanism-specific result, the relevant experiment must validate the exact checkpoint, native kernels, attention backend, page-size support, HiCache effective configuration, full required state restore, `direct` / `kernel` I/O path where applicable, and numerical consistency.
 
@@ -176,6 +181,8 @@ A generic `page size` label is not sufficient when these differ.
 ### 4.2 SGLang HiCache
 
 SGLang HiCache is the preferred mechanism path for the Page Granularity and GPU-Assisted I/O group.
+
+The initial KV/state smoke path validated `kernel` I/O with `page_first`. Its accepted formal path was subsequently frozen to `direct` I/O, `page_first_direct`, `write_through`, page size 64, and `hicache-ratio=3`, with public `/metrics` evidence. The Hierarchical Cache Value group reuses this formal configuration so that only hierarchy enablement changes in paired comparisons. The later GPU-Assisted I/O group owns the `direct` versus `kernel` comparison. Every run records the effective resolved configuration; changing one of these values creates a different runtime condition.
 
 Current upstream server arguments expose, among others:
 

@@ -27,7 +27,8 @@ hierarchical-cache-value/
 │   ├── 01-baseline-benefit.md
 │   ├── 02-gpu-cache-pressure-scaling.md
 │   ├── 03-prefix-reuse-scaling.md
-│   └── 04-cross-model-validation.md
+│   ├── 04-cross-model-validation.md
+│   └── 05-current-status.md
 ├── code/
 │   └── README.md
 └── results/
@@ -36,6 +37,7 @@ hierarchical-cache-value/
 
 - `docs/00-common-conventions.md`：统一 validity gate、workload invariants、cache pressure、reuse 与指标口径。
 - `docs/01-04*.md`：各实验独立目标、流程、结果结构与解释边界。
+- `docs/05-current-status.md`：实现、capability gate 与 smoke 的已完成证据，以及正式重复测量的后续边界。
 - `code/`：workload 构造、实验运行、runtime validation、指标采集和结果处理代码。
 - `results/`：raw measurements、processed data、统计结果、图表与结果摘要。
 
@@ -71,6 +73,20 @@ Experiment 2 与 Experiment 3 分别隔离 capacity pressure 和 reuse opportuni
 - active-request preemption。
 
 Hit rate 不能单独作为收益证据。正式结论必须把 reusable-state eviction、CPU-tier hit、avoided recomputation、transfer/stall 和端到端性能放在同一证据链中。
+
+## Runtime baseline
+
+当前实现使用独立的用户目录环境：
+
+```text
+/share01/hpc/humxlab_intern/yanglihan/dl-stack/envs/sglang-hicache-cu129-torch211
+```
+
+固定版本为 SGLang `0.5.6.post3.dev8468+g4ad990ba7`（commit `4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63`）与 PyTorch `2.11.0+cu129`。第一组正式实验已经验证 `direct` I/O backend、`page_first_direct` host layout、`write_through` policy、page size 64 与 `hicache-ratio=3`；本实验组固定复用这组配置，并启用公开 `/metrics` 分层命中证据。它们不作为 Experiments 1–3 的 sweep 变量。`kernel` I/O 留给后续 GPU-assisted I/O 实验组，避免改变层级价值实验的机制条件。
+
+GPU-only 与 hierarchical 配对运行必须使用相同模型、GPU cache budget、page/block/state policy、scheduler、workload 与 serving load；配对差异仅是是否启用经过验证的 CPU hierarchy。环境已通过 A100 BF16、JIT、FlashInfer 和 KV-state Exp1–3 smoke，只表示运行环境可用，不替代下面的 full-hierarchy capability validation。
+
+禁止使用旧 `envs/sglang`、partial `envs/sglang-cu129`、Docker、系统 CUDA/driver 修改或登录节点安装。详细环境与工具链要求见仓库根目录 [`docs/ENVIRONMENT_REQUIREMENTS.md`](../../docs/ENVIRONMENT_REQUIREMENTS.md)。
 
 ## Execution gate
 

@@ -50,3 +50,9 @@ data/raw/
 *.tmp
 *.temp
 *.log
+
+# Hierarchical Cache Value group: generated run artifacts (raw runs,
+# calibration files and processed output are regenerated on every run;
+# only the tracked README stays in results/)
+experiments/hierarchical-cache-value/results/*
+!experiments/hierarchical-cache-value/results/README.md

@@ -1,127 +1,170 @@
-# Code
+# Code — Hierarchical Cache Value evaluation
 
-本目录用于存放 “Hierarchical Cache Value Evaluation” 的实验实现。
+Implementation of the four experiments in `hierarchical-cache-value` plus
+the full-hierarchy capability gate. All runtime interaction uses the
+public SGLang HTTP surface (`/health`, `/generate`, `/flush_cache`,
+`/metrics`, `/get_model_info`); the local package is named `hcv` so it
+never shadows the upstream `sglang` package (`python -m
+sglang.launch_server` always resolves the installed upstream module).
 
-所有实现必须遵循 [`../docs/00-common-conventions.md`](../docs/00-common-conventions.md) 和仓库根目录 [`../../../docs/TECHNICAL_BASELINE.md`](../../../docs/TECHNICAL_BASELINE.md)。
+## Frozen runtime baseline (this group)
 
-## Responsibilities
+| Setting | Value |
+|---|---|
+| environment prefix | `$DL_ROOT/envs/sglang-hicache-cu129-torch211` |
+| SGLang commit | `4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63` |
+| SGLang version | `0.5.6.post3.dev8468+g4ad990ba7` |
+| I/O backend | `direct` (GPU-assisted `kernel` I/O belongs to group 3) |
+| host layout | `page_first_direct` |
+| write policy | `write_through` |
+| page size | 64 |
+| metrics | public `/metrics` enabled |
+| precision | bfloat16 |
+| GPU-only vs hierarchical difference | hierarchy enablement + CPU tier only |
 
-代码需要覆盖以下职责：
+No fallback to `envs/sglang`, `envs/sglang-cu129`, `qwen` or `gemma4`.
 
-- text-only shared-prefix workload 构造与 deterministic request trace 生成；
-- Experiment 3 的 eligible revisit slots 与 matched unique-prefix replacement；
-- GPU-only 与 GPU + CPU hierarchical 两种运行模式；
-- cold-cache 与 warm-cache 初始状态建立和验证；
-- full / partial / unsupported hierarchy capability validation；
-- hybrid model 各 state group 的 residency / restore 覆盖验证；
-- GPU reusable-cache pressure calibration；
-- active-request preemption、effective concurrency 和 achieved request rate 监控；
-- GPU hit / eviction、CPU hit、recomputation、CPU-GPU traffic、non-overlapped restore stall、TTFT 与 throughput 采集；
-- Experiments 1–3 的 primary-model sweep；
-- Experiment 4 的 second-model matched validation；
-- raw results 到 processed results 的 deterministic processing；
-- figure/table generation。
-
-## Runtime validation
-
-正式实验入口不得只检查模型是否能够启动。
-
-至少需要验证：
-
-1. prefix-cache reuse 与 full recomputation 的输出一致性；
-2. GPU-resident 与 CPU-resident reuse 能够通过 runtime observable behavior 确认；
-3. CPU restore 覆盖跳过目标 prefix computation 所需的全部 state groups；
-4. Qwen3.5 在作为 full-hierarchy target 时同时覆盖 attention KV 与 Gated DeltaNet recurrent state；
-5. Gemma 4 在作为 full-hierarchy target 时覆盖 pinned runtime 实际保留的 local/sliding-window 与 global-attention state groups；
-6. restore failure 不会被静默计为 CPU hit；
-7. paired GPU-only / hierarchical runs 使用相同 prefix-cache policy、block/state policy、cache dtype、scheduler policy 和 GPU cache budget；
-8. CPU offloading backend 与其配置在所有 hierarchical runs 中固定并写入 metadata。
-
-Validation output 必须写入 run metadata，而不是只打印到终端。
-
-## Workload requirements
-
-每条 trace 必须具有稳定 identifier，并能够由版本控制配置和 seed 重建。
-
-Experiment 3 不通过 request reordering、减少 prefix-group 数量或集中到少量热点 prefix 来提高 reuse。它通过固定 eligible revisit slots，在相同位置选择 revisit existing prefix 或 matched unique prefix 来改变 revisit fraction。
-
-Trace metadata 至少保存：
-
-- request count；
-- prefix identifier；
-- prefix token length；
-- revisit flag；
-- reuse distance；
-- input/output token lengths；
-- offered-load parameters；
-- seed / configuration hash。
-
-## Cache-pressure calibration
-
-Experiment 2 在 sweep 前需要先确定固定 active workload 不发生 scheduler preemption 所需的运行容量。
-
-主 pressure curve 只改变可供 reusable state 使用的 capacity headroom。
-
-任何出现以下情况的 point 均不能静默进入主曲线：
-
-- OOM；
-- active-request preemption；
-- effective concurrency 改变；
-- offered-load condition 改变；
-- CPU tier capacity eviction 成为新的主要变量。
-
-这些 run 仍保存 raw data，并记录 invalid reason。
-
-## Measurement requirements
-
-优先记录 token/state-volume-weighted cache statistics，而不是只记录 request-level hit count。
-
-CPU-GPU transfer activity 与 non-overlapped restore stall 必须区分。Raw transfer duration 不与 computation time 直接相加形成 TTFT decomposition。
-
-每次 run 的 metadata 至少包括：
-
-- experiment ID；
-- model role: primary / secondary；
-- model identifier 与 revision；
-- runtime version/commit；
-- hardware、driver、CUDA/runtime；
-- precision 与 cache dtype；
-- hierarchy validation status: full / partial / unsupported；
-- validated state groups；
-- prefix-cache/block/state policy；
-- CPU offload backend and policy when enabled；
-- GPU cache budget 与 CPU tier budget；
-- initial cache state；
-- workload trace identifier；
-- configured / actual reuse；
-- cache-pressure calibration identifier；
-- offered / achieved request rate；
-- active-request preemption count；
-- repetition index；
-- validity status 与 invalid reason。
-
-## Processing rules
-
-- Raw measurements 不被处理脚本修改或覆盖。
-- Full hierarchy、partial hierarchy 与 unsupported results 分开处理。
-- Invalid runs 不删除，只从主 aggregation 中排除并保留原因。
-- 派生指标由 raw/processed data 计算，不把最终数字手工写死在脚本中。
-- Cross-model normalization 必须同时保留 absolute measurements。
-- Experiment 4 的 representative-point selection rule 必须在 second-model performance analysis 前冻结并记录。
-
-## Suggested structure
-
-后续实现可以按以下职责拆分：
+## Layout
 
 ```text
 code/
-├── configs/
-├── workloads/
-├── validation/
-├── runners/
-├── profiling/
-├── analysis/
-└── README.md
+├── hcv/                  # local package (stdlib only)
+│   ├── config.py         # frozen runtime config, precedence, pairing checks
+│   ├── metrics.py        # public Prometheus parser, snapshots, deltas (missing=None)
+│   ├── http_client.py    # /health /generate /flush_cache /metrics /get_model_info
+│   ├── server_lifecycle.py  # bounded server launch/ready/shutdown
+│   ├── workload.py       # deterministic trace construction + invariants
+│   ├── filler.py         # L1 pressure budgeting (observed capacity / fallback)
+│   ├── hierarchy.py      # full/partial/unsupported/invalid-infra classification
+│   ├── probes.py         # serial probes with isolated before/after counters
+│   ├── residency.py      # cold/warm preparation + observed cache state
+│   ├── load_driver.py    # concurrent windows + origin accounting
+│   ├── provenance.py     # env markers, JIT toolchain, runtime identity
+│   ├── schema.py         # run layout + raw/processed/result schemas
+│   ├── run_common.py     # shared runner scaffolding
+│   ├── run_validation.py # full-hierarchy gate runner
+│   ├── calibrate.py      # Exp2 calibration (min GPU budget floor)
+│   ├── run_exp1.py       # GPU-only vs hierarchical x cold/warm
+│   ├── run_exp2.py       # pressure points (Low/Medium/High/[VeryHigh])
+│   ├── run_exp3.py       # reuse sweep (fixed slots, matched unique prefixes)
+│   ├── run_exp4.py       # frozen V0/V1/V2 cross-model validation
+│   ├── analysis.py       # deterministic raw -> processed -> results
+│   ├── dry_run.py        # DRY_RUN=1 static validation (no server)
+│   └── preflight.py      # BF16 + C++20/CUDA JIT preflight (compute node)
+├── configs/              # per-experiment JSON configs
+├── sbatch/               # ylh-hcv-* sbatch files + submit scripts
+└── tests/                # pure-Python unit tests (run via Slurm)
 ```
 
-实际目录以实现规模为准，不为了形式预建无内容目录。
+## Key invariants
+
+* Missing metrics are `null`/unsupported, never zero; deltas propagate
+  `None`.
+* Pinned Qwen hybrid native `/generate` may omit
+  `cached_tokens_details`; isolated before/after per-tier counters are
+  authoritative.
+* Serial CPU-hit validation: host-hit delta ≥ prefix length, zero
+  device-hit delta, input-path delta < prefix length (no silent
+  restore-to-recompute fallback). GPU hit: device-hit delta ≥ prefix
+  length, zero host-hit delta.
+* Concurrent windows classify origin as
+  `host_origin=max(host_hit,min(load_back,total_hit))` and
+  `device_origin=total_hit-host_origin`; missing load-back evidence stays
+  unknown rather than becoming zero.
+* Filler early-stop uses L1 evidence only (`kv_evictable`/`kv_available`);
+  under write-through, host occupancy grows before L1 eviction and is
+  never a stop condition. Pressure = observed L1 capacity when available,
+  else `max(6*context_length, 262144) + protected_prefix_tokens + 4096`.
+* Full Qwen hierarchy requires per-observable-state-group restore
+  evidence for attention KV AND Gated DeltaNet recurrent state;
+  aggregate-only evidence classifies `partial`, never `full`.
+* `validation.json` controls reportability; a Slurm `COMPLETED` alone
+  never validates a result.
+* Paired GPU-only/hierarchical configs differ only in hierarchy
+  enablement + CPU tier (checked by `assert_paired`).
+* Raw data is never overwritten: every run uses a unique
+  `run-<UTC>-job<id>` directory.
+* User overrides are resolved once (defaults < config file < `HCV_*` env
+  < CLI) and are never silently overwritten by `SMOKE=1`.
+
+## Usage
+
+All heavy work runs through complete `ylh-hcv-*` sbatch files on the
+compute node. The submit scripts are thin wrappers that export
+`HCV_CODE_DIR` and pass user overrides.
+
+```bash
+cd experiments/hierarchical-cache-value/code/sbatch
+
+# --- staged validation order (recommended) -----------------------------
+# 1. dry-run: static validation, no server; submit as a minimal Slurm job
+DRY_RUN=1 bash submit_validation.sh
+
+# 2-4. hierarchy gate in smoke mode: exercises minimal recompute, serial
+#      GPU hit, then serial CPU hit and the full/partial/unsupported
+#      classification (small filler in smoke)
+SMOKE=1 bash submit_validation.sh          # MODEL=qwen default
+#     after COMPLETED, inspect:
+#     results/validation/run-*/validation.json   -> status must be full
+
+# 5. one formal point, concurrency ceiling 1 vs 4 (measurement semantics
+#    before committing to the full formal sweep)
+CONCURRENCY=1 CELL_LIMIT=1 bash submit_exp1.sh
+CONCURRENCY=4 CELL_LIMIT=1 bash submit_exp1.sh
+
+# 6. complete smoke of all experiments (still SMOKE=1)
+SMOKE=1 bash submit_exp1.sh
+SMOKE=1 bash submit_exp2.sh                # calibration + Low/Medium/High
+SMOKE=1 bash submit_exp3.sh                # reuse 0.00/0.25/0.50/0.75
+SMOKE=1 bash submit_exp4.sh                # freeze + run (MODEL=gemma)
+
+# 7. full experiments
+bash submit_exp1.sh
+bash submit_exp2.sh
+bash submit_exp3.sh
+bash submit_exp4.sh
+
+# --- validation / analysis / tests -------------------------------------
+bash submit_analysis.sh tests              # pure-Python unit tests (Slurm)
+bash submit_analysis.sh analysis           # raw -> processed -> results
+
+# --- per-experiment knobs ----------------------------------------------
+# exp1: MODEL=qwen|gemma, ARCH=gpu_only|hierarchical, STATE=cold|warm
+# exp2: ARCH, PRESSURE=Low|Medium|High|VeryHigh (VeryHigh optional)
+# exp3: ARCH, REUSE=0.00|0.25|0.50|0.75, PRESSURE=fixed exp2 label
+# exp4: MODEL=gemma (secondary); freeze phase then run phase
+```
+
+### DRY_RUN=1
+
+Validates exact environment markers (six marker files + pinned commit),
+prefix-local compiler executables, model path, log path, config
+precedence (recorded per-field sources), resolved smoke/formal values,
+server argv for both architectures, the GPU-only/hierarchical pairing
+invariant, and the `ylh-hcv-*` job-name prefix when inside a job. It
+never starts a server, never imports torch, and never touches a GPU.
+Dry-run success is environment conformance only — it is NOT
+full-hierarchy proof (see `hcv.hierarchy`).
+
+### Preflight (every real sbatch)
+
+Before server launch each sbatch runs `hcv.preflight`: a real BF16
+matmul on the GPU plus a C++20 + CUDA kernel compile/run with the
+prefix-local `nvcc`/`gcc`/`g++`, and `hcv.provenance check` verifies the
+marker files and pinned commit. Failures abort the job before the server
+starts.
+
+## Results
+
+Raw runs land in `results/<experiment>/run-<UTC>-job<id>/` with
+`metadata.json`, `validation.json` (gate outcome), `raw/measurements.jsonl`
+(per-request/window/filler/calibration evidence), `raw/snapshots.jsonl`
+and `server/` logs. `hcv.analysis` deterministically produces
+`processed_out/processed/*.json` and `processed_out/results/*.csv`
+without touching raw data.
+
+## Tests
+
+`tests/run_tests.py` runs all `test_*` functions in `tests/test_*.py`
+(no pytest dependency, no server, no GPU, no torch import). Run only via
+Slurm: `bash submit_analysis.sh tests`.
