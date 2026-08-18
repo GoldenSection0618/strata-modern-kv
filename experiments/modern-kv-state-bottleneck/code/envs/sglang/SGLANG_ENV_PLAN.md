@@ -180,3 +180,12 @@ need a minimal validation fix. Do not use the full Gemma Exp1/2 serial
 submitter until that validation passes. The exact commands and current rerun
 scope are maintained in the global `02-环境配置.md` and experiment
 `docs/05-current-status.md`.
+
+The handoff parameter source of truth is deliberately split: this plan pins
+the environment (SGLang/Torch/CUDA/compiler), while global `02-环境配置.md`
+records the model, TP, memory, workload, HiCache, Slurm and run-tag matrix.
+The runner source remains authoritative for defaults: Exp1/2 have 3 warmups
+and 10 repeats (smoke: 1 and 2); Exp3 has 5 warmups, 30 measured requests,
+3 repeats, a concurrency ceiling of 64, 12 prefix families and a 0.8
+dominance threshold (smoke: 1, 5, 1, and 4 respectively). Do not tune these
+values for a node handoff; only use the documented smoke reductions.

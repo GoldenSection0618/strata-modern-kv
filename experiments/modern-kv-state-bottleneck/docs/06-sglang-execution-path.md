@@ -348,6 +348,13 @@ remain separate prerequisites; their exact rerun scope is in
 `05-current-status.md`. The complete operator checklist and commands live in
 the global `dl-stack/docs/02-环境配置.md`.
 
+The same global checklist also pins the handoff model/script matrix:
+checkpoint path, SGLang environment and commit, BF16, two-GPU TP, memory
+fraction, context/prefix points, residency, HiCache ratio/I/O/layout/policy/
+page size, smoke replication and run tags. Script defaults must not be used
+as an excuse to vary a formal condition: only node allocation and the
+documented smoke reductions are changeable during handoff.
+
 Hang policy: the server lifecycle waits for readiness with a bounded
 timeout and shuts down gracefully on normal completion; a real hang is
 handled by `scancel` at the job level (Slurm cgroup cleanup).
