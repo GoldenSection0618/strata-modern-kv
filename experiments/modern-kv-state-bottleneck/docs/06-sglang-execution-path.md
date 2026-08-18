@@ -330,6 +330,24 @@ Note: the `#SBATCH -p` / `--gres` directives are fixed; the
 `PARTITION`/`GPU` environment variables are honored **only** by the submit
 scripts (they pass `-p`/`--gres` to `sbatch`).
 
+### Cross-A100 handoff
+
+The canonical prefix and checkpoints are shared under the user `/share01`
+tree, so a new A100 node reuses them unchanged; no environment installation or
+copy is permitted. The `DRY_RUN=1` mode checks the selected prefix, installed
+commit, JIT markers, imports and paths, but it does not prove GPU health. A
+node handoff must therefore follow dry run with one run-tagged actual smoke,
+which performs the BF16 preflight before server launch.
+
+Gemma 32K requires `--gres=gpu:2` on one A100 node with `TP_SIZE=2` and
+`MEM_FRACTION=0.75`. If that smoke's `validation.json` is not
+`all_passed=true`, stop and preserve the result/log directory; do not submit a
+formal sweep. Passing a node smoke only establishes environmental readiness.
+The Gemma cache-hit output-consistency and TP=2 Exp3 aggregation blockers
+remain separate prerequisites; their exact rerun scope is in
+`05-current-status.md`. The complete operator checklist and commands live in
+the global `dl-stack/docs/02-环境配置.md`.
+
 Hang policy: the server lifecycle waits for readiness with a bounded
 timeout and shuts down gracefully on normal completion; a real hang is
 handled by `scancel` at the job level (Slurm cgroup cleanup).

@@ -157,3 +157,26 @@ ledger and each run's `validation.json` for current measurement validity.
 - Formal results are valid only after the residency validation gates described
   in `06-sglang-execution-path.md` pass. A successfully started server alone
   is not a result.
+
+## 8. Cross-A100 handoff
+
+The canonical prefix, cached checkpoint, and repository are under the shared
+user `/share01/.../yanglihan/` tree. A new A100 compute node therefore reuses
+them unchanged: do not create, copy, repair, or reinstall an environment on
+the new node. The experiment sbatch files explicitly select this prefix;
+`env.sh` alone does not select SGLang.
+
+For Gemma 4 12B at 32K, request two GPUs on the **same A100 node** and pin
+`TP_SIZE=2`, `MEM_FRACTION=0.75`. A dry run verifies paths, markers, import,
+and the installed commit but does not establish GPU health. Follow it with one
+run-tagged 32K recompute smoke on the intended node; that actual run performs
+the BF16 preflight and server startup. Treat `validation.json: all_passed=true`
+as the node handoff criterion. A failed check stops the handoff; preserve its
+log and result directory rather than submitting a formal sweep.
+
+Passing this handoff does not remove the current Gemma research blockers:
+32K cache-hit `prefix_consistency` and TP=2 Exp3 per-tier aggregation still
+need a minimal validation fix. Do not use the full Gemma Exp1/2 serial
+submitter until that validation passes. The exact commands and current rerun
+scope are maintained in the global `02-环境配置.md` and experiment
+`docs/05-current-status.md`.
