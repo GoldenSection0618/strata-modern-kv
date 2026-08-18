@@ -42,7 +42,7 @@
 
 主要证据链为：GPU eviction → validated CPU-tier hit → avoided recomputation → restore traffic/stall → TTFT/throughput。
 
-Full hybrid-state restore 无法验证时，结果必须标记为 `partial` 或 `unsupported`。
+Full hybrid-state restore 无法验证时，结果必须标记为 `partial` 或 `unsupported`。当前实现、capability gate 与 smoke 边界见 [`experiments/hierarchical-cache-value/docs/05-current-status.md`](../experiments/hierarchical-cache-value/docs/05-current-status.md)；其中 smoke 不是正式统计结果。
 
 详细设计位于 `experiments/hierarchical-cache-value/`。
 
@@ -61,7 +61,7 @@ Full hybrid-state restore 无法验证时，结果必须标记为 `partial` 或 
 
 Configured page size、prefix-match granularity、physical block size 与 actual transfer size 不得混为同一变量。
 
-SGLang HiCache 是主要 mechanism path。SGLang 必须使用独立 `envs/sglang` prefix 与项目固定源码 revision，并遵守 [`ENVIRONMENT_REQUIREMENTS.md`](ENVIRONMENT_REQUIREMENTS.md)。正式实验仍必须在 exact pinned build 上通过 checkpoint、attention backend、page-size、full hybrid-state restore、HiCache effective configuration 与 `direct` / `kernel` I/O path 等 mechanism-specific capability gate。
+SGLang HiCache 是主要 mechanism path。SGLang 必须使用独立的 canonical `envs/sglang-hicache-cu129-torch211` prefix 与固定的 installed revision，并遵守 [`ENVIRONMENT_REQUIREMENTS.md`](ENVIRONMENT_REQUIREMENTS.md)。本组把 `direct` 与 `kernel` I/O 作为比较变量：每个实际采用的路径都必须在 exact pinned build 上通过 checkpoint、attention backend、page-size、所需 hybrid-state restore、HiCache effective configuration 与该 I/O path 的 mechanism-specific capability gate；不能把另一路径的验证结果外推到它。
 
 详细设计位于 `experiments/page-granularity-gpu-assisted-io/`。
 

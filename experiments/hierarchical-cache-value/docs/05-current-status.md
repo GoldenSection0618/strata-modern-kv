@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-12 (A100 smoke completion)
+Last updated: 2026-08-18 (documentation revision; A100 smoke jobs completed 2026-08-13)
 
 ## Scope of the completed work
 
@@ -41,7 +41,7 @@ The earlier Exp4 run `1295190` is superseded: it exposed that the Qwen budget fr
 
 The next execution phase is repeated formal measurement, not further environment debugging:
 
-1. Freeze the smoke-validated code and configurations from this commit.
+1. Freeze the smoke-validated code and resolved configurations before formal submission. The checked-in defaults specify `n_repeats=3` for Experiments 1--3 and `n_repeats=2` for Experiment 4; these formal repetitions have not yet been run.
 2. Run the prescribed repeated Exp1--Exp3 paired cells, keeping the same capability gate and fixed-pressure preparation.
 3. Run the selected Gemma Exp4 representative configurations with its matched-budget policy, rather than transplanting Qwen fractions.
 4. Process only completed, valid repeated cells into formal summary tables and confidence intervals; retain the smoke artifacts as execution-path evidence.

@@ -4,9 +4,9 @@ This document defines the shared validity rules for Experiments 1–4 in `hierar
 
 ## 1. Execution roles
 
-The default primary sweep target is **Qwen3.5-9B on A100 40GB** because it exercises both full-attention KV and Gated DeltaNet recurrent state.
+The selected primary sweep target is **Qwen3.5-9B on A100 40GB** because it exercises both full-attention KV and Gated DeltaNet recurrent state. The pinned runtime's Qwen full-hierarchy gate has passed; the completed smoke evidence and its non-formal boundary are recorded in [`05-current-status.md`](05-current-status.md).
 
-This choice is conditional on the runtime validation gate in [`../../../docs/TECHNICAL_BASELINE.md`](../../../docs/TECHNICAL_BASELINE.md). If the pinned runtime cannot verify full CPU offload/restore for every Qwen3.5 state group, Qwen3.5 must not be used to claim full hierarchical-cache behavior.
+This choice remains conditional on the runtime validation gate in [`../../../docs/TECHNICAL_BASELINE.md`](../../../docs/TECHNICAL_BASELINE.md) whenever the pinned runtime, checkpoint, platform, or relevant state mechanism changes. If that exact condition cannot verify full CPU offload/restore for every Qwen3.5 state group, Qwen3.5 must not be used to claim full hierarchical-cache behavior.
 
 In that case, Gemma 4 12B becomes the primary full-hierarchy target and Qwen3.5 is reported as `partial` or `unsupported` until the missing path is validated.
 
