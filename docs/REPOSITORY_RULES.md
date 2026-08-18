@@ -1,5 +1,12 @@
 # Repository Rules
 
+Cluster execution is additionally governed by the canonical rules in
+`/share01/hpc/humxlab_intern/yanglihan/dl-stack/docs/01-集群使用规则.md` and
+environment guidance in `02-环境配置.md`. Those global rules take precedence
+for login-node resource limits, Slurm submission, environment installation,
+agent delegation, GPU selection, and cleanup safety; this repository records
+only project-specific additions.
+
 ## 1. Purpose
 
 This repository is an experimental research codebase. The main requirements are:

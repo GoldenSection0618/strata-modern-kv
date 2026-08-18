@@ -34,6 +34,8 @@ Primary observations include:
 
 The main hierarchical-cache condition is a verified **CPU-resident hit**. A **recompute baseline** is used to quantify saved computation, and a **GPU-resident hit control** is used when practical to estimate the lower bound for reuse without CPU-GPU restore cost.
 
+**Execution backends.** Each experiment can be executed on either of two serving runtimes, which are not interchangeable evidence sources: the legacy **vLLM 0.26.0** path (reference, has already-collected recompute results) and the explicit **SGLang / HiCache** path (installed commit `4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63`, public HTTP + Prometheus boundaries only; see `experiments/modern-kv-state-bottleneck/docs/06-sglang-execution-path.md`). Every reported result must record which runtime, its commit/version, and the residency-validation evidence produced.
+
 Run this group on both Qwen3.5-9B and Gemma 4 12B. Detailed designs and common measurement conventions are maintained under `experiments/modern-kv-state-bottleneck/`.
 
 This group establishes whether the rest of the Strata-style optimization space is still practically relevant.

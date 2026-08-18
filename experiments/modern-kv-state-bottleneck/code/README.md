@@ -53,7 +53,10 @@ code/
 ├── validate.py                  # Validation gate（recompute 跳过 cache-hit 检查）
 ├── run_exp1.py / run_exp1.sbatch / submit_exp1.sh
 ├── run_exp2.py / run_exp2.sbatch / submit_exp2.sh
-└── run_exp3.py / run_exp3.sbatch / submit_exp3.sh
+├── run_exp3.py / run_exp3.sbatch / submit_exp3.sh
+├── sglang/                      # SGLang / HiCache 执行路径（Exp1-3，见下节）
+├── envs/sglang/                 # canonical SGLang 环境方案与已执行的 bootstrap
+└── tests/                       # 纯 Python 单元测试
 ```
 
 ## Runtime requirements (A100 / vLLM 0.26.0)
@@ -65,6 +68,58 @@ code/
 - Qwen 模型自动设置 `max_num_seqs=16`（Mamba cache block 预算限制，见 `runners/vllm_runner.py`）。
 
 已知问题：`VLLMStatsCollector` 在 vLLM 0.26 V1 引擎下无法定位 `KVCacheManager`（内部对象在 EngineCore 子进程），gpu_hit/cpu_hit 验证门恒失败。修 stats 采集或放宽验证门后才能跑 hit 模式。
+
+## SGLang / HiCache path（Explicit path for Exp1-3）
+
+`code/sglang_hicache/` 通过公开 SGLang server 的 HTTP + Prometheus 边界驱动 Exp1-3，不复制/不 import SGLang 内部实现。本地实验包命名为 `sglang_hicache`（不是 `sglang`），保证 `code/` 下启动的 `python -m sglang.launch_server` 解析到上游 SGLang 包。设计细节见 `../docs/06-sglang-execution-path.md`。
+
+```text
+code/sglang_hicache/
+├── run_exp1.py / run_exp2.py / run_exp3.py   # entry points
+├── server_lifecycle.py                       # 子进程生命周期（bounded readiness + graceful stop）
+├── http_client.py                            # stdlib HTTP 客户端（/generate、/flush_cache、/metrics 等）
+├── metrics.py                                # Prometheus 解析 + 类型化 CacheStats + before/after delta
+├── residency.py                              # recompute/gpu_hit/cpu_hit 准备 + 证据判定（纯函数）
+├── prefix_pool.py                            # Exp3 确定性前缀池 + tier 支配判定
+├── validation.py                             # validation gate（与 vLLM 路径同 schema）
+├── summary.py / load_driver.py               # 百分位/负载摘要 + 并发 HTTP 负载驱动（Exp3）
+├── workload.py / config.py / io.py / session.py
+└── sbatch/                                   # ylh- sbatch + submit 脚本（full 与 smoke 分离）
+code/envs/sglang/                             # canonical 环境方案与非破坏性 bootstrap
+code/tests/                                   # 纯 Python 单元测试（无 CUDA/网络/权重）
+```
+
+### SGLang 用法
+
+```bash
+# 单元测试（纯 stdlib，无 CUDA/网络）
+bash code/tests/run_tests.sh
+
+# 单点运行（默认使用 canonical prefix；也可用 PYTHON_BIN 覆盖）
+PYTHON_BIN=$DL_ROOT/envs/sglang-hicache-cu129-torch211/bin/python python3 code/sglang_hicache/run_exp1.py \
+    --model qwen --model-path $DL_ROOT/cache/huggingface/models--Qwen--Qwen3.5-9B \
+    --context-length 4096 --residency recompute \
+    --output-dir results/sglang/exp1/qwen/4096 --log-dir logs
+
+# SLURM 提交（A100；smoke 参数与 full sweep 分离；每次运行独立 run-<tag> 目录）
+SMOKE=1 bash code/sglang_hicache/sbatch/submit_exp1_sglang.sh qwen smoke
+bash code/sglang_hicache/sbatch/submit_exp1_sglang.sh qwen
+bash code/sglang_hicache/sbatch/submit_exp2_sglang.sh qwen
+bash code/sglang_hicache/sbatch/submit_exp3_sglang.sh qwen primary
+FROZEN_RATES=1.2,2.4,3.4,4.1,4.9,5.6,6.3 bash code/sglang_hicache/sbatch/submit_exp3_sglang.sh qwen control
+
+# Exp3 双 control gate 通过后，将完整 Exp1 + Exp2 串成单测量链
+ROOT_DEPENDENCY=afterok:<recompute-gate-job>:<gpu-hit-gate-job> \
+NODELIST=smtg5001 bash code/sglang_hicache/submit_exp1_exp2_serial.sh
+```
+
+正式 Qwen 配置固定为 `HICACHE_RATIO=3`、`HICACHE_IO_BACKEND=direct`、
+`HICACHE_MEM_LAYOUT=page_first_direct`。串行提交器一次提交 Exp1 的 12 项和
+Exp2 的 13 项，但通过逐项 `afterok` 保证任意时刻只有一个测量作业运行；提交
+清单写入 `results/sglang/exp12-pipelines/<pipeline-tag>/jobs.txt`。该机制用于避免
+同节点并行实验争用 CPU、DRAM 和 HiCache 路径，不代表跳过每项 validation gate。
+
+SGLang 结果写入 `results/sglang/exp{1,2,3}/`，每次运行落在独立的 `run-<tag>` 目录（UTC 时间戳 + SLURM job id，可用 `RUN_TAG` 覆盖）内，raw/summary/validation/metadata 分离与 vLLM 路径一致，分析脚本（`exp{1,2}_analysis.py`、`exp4_synthesis.py`）通过递归查找直接指向对应目录。Exp3 使用确定性前缀池（`prefix_pool_size` 个互异前缀族 + `hit_dominance_threshold` 支配判定，均固定在 metadata 与 sbatch）。
 
 ## Usage
 

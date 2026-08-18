@@ -52,7 +52,14 @@ modern-kv-state-bottleneck/
 
 正式收集结果前，必须先验证当前 pinned runtime 对两个模型的 prefix-cache/state restore 行为。尤其是 hybrid/recurrent-state cache path，不能仅凭请求成功运行就假定 CPU-resident reuse 已正确覆盖所有 state groups。
 
-## Execution status (2026-08-09)
+两条执行路径（不可互换的 evidence source）：
+
+- **vLLM（legacy / reference）**：`code/runners/vllm_runner.py` + `code/run_exp{1,2,3}.py`；已有 recompute 结果。
+- **SGLang / HiCache（Explicit path）**：`code/sglang_hicache/`（见 [docs/06-sglang-execution-path.md](docs/06-sglang-execution-path.md)），通过公开 HTTP/Prometheus 边界驱动 SGLang server。本地实验包名为 `sglang_hicache`（不是 `sglang`），避免遮蔽上游 SGLang 包。
+
+## Execution status (verified 2026-08-18)
+
+### vLLM path (legacy)
 
 Runtime: vLLM 0.26.0, Qwen/Qwen3.5-9B, A100 40GB (`i56m512A100`).
 
@@ -63,3 +70,14 @@ Runtime: vLLM 0.26.0, Qwen/Qwen3.5-9B, A100 40GB (`i56m512A100`).
   - `VLLM_USE_FLASHINFER_SAMPLER=0`（flashinfer sampler JIT 编译失败）
   - `VLLM_WORKER_MULTIPROC_METHOD=spawn`（否则 fork 竞态崩溃）
   - Qwen 模型 `max_num_seqs=16`（Mamba cache block 预算限制）
+
+### SGLang path (current primary path)
+
+- canonical 环境 `~/yanglihan/dl-stack/envs/sglang-hicache-cu129-torch211` 已安装并在 A100 上验证；最终有效 HiCache 参数固定为 `HICACHE_RATIO=3`、`HICACHE_IO_BACKEND=direct`、`HICACHE_MEM_LAYOUT=page_first_direct`。
+- Qwen Exp3 正式 `cpu_hit` primary（job `1293163`）及其严格门禁（`1293164`）已通过；同一 frozen-rate sweep 的 `recompute` / `gpu_hit` controls（`1293758` / `1293759`）及门禁（`1293760` / `1293761`）也已通过。
+- Qwen Exp1（`1293813`–`1293824`）与 Exp2（`1293825`–`1293837`）已全部完成且逐项验证通过，分别为 **12/12** 和 **13/13** 有效点；Qwen Exp3 primary 与两个 controls 的严格门禁也全部通过。
+- 每次运行写入独立的 `run-<tag>` 输出目录；只有 `validation.json` 的 `all_passed=true`（Exp3 还要求 dominance gate 通过）才能作为有效测量报告。
+- 三种 residency condition 的语义与验证证据见 [docs/06-sglang-execution-path.md](docs/06-sglang-execution-path.md)：`cpu_hit` 需要同一 before/after 窗口内的 per-request host 证据 + 正向 `load_back_tokens_total`/`host_hit` delta；Exp3 使用确定性前缀池 + `hit_dominance_threshold` 支配判定（不占支配即标 unsupported）。
+- 每次运行写入独立的 `run-<tag>` 输出目录（UTC 时间戳 + SLURM job id，`RUN_TAG` 可覆盖），重复运行不覆盖 raw 文件。
+- Gemma 32K 使用 2×A100、TP=2、`MEM_FRACTION=0.75`。其 Exp1 当前为 10/12、Exp2 为 5/13 有效；无效 cache-hit 点均因 `prefix_consistency` 失败，不能用于汇总。Gemma Exp3 单请求 smoke 通过，但 TP=2 的七个并发 load point 缺乏可判定的 per-tier 聚合证据，均标为 unsupported。
+- 当前逐项台账、作业清单与重跑边界见 `docs/05-current-status.md`；以其中列出的 validation 与结果文件为准。

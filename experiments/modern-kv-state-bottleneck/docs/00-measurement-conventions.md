@@ -28,6 +28,8 @@ The reusable prefix is present in the CPU/offload tier and must be promoted to G
 
 A run may be labeled as a CPU-resident hit only when the runtime counters or trace confirm that the intended cache/state groups were actually restored from CPU.
 
+**Runtime-specific evidence.** The exact counters and per-request fields that satisfy these labels depend on the serving runtime. For the SGLang / HiCache path they are specified in [06-sglang-execution-path.md](06-sglang-execution-path.md) (§3–§5): public Prometheus deltas (`prefill_effective_tokens_total{mode=...}`, `load_back_tokens_total`, `hicache_backup_tokens_total`, `hicache_host_used_tokens`) are the required tier evidence; `meta_info.cached_tokens_details.{device,host}` is corroboration when the pinned runtime exposes it. A `cpu_hit` label requires a host-hit metric delta at least as large as the reusable prefix and no competing device-hit delta in the same isolated window; positive `load_back_tokens_total` is retained as corroboration. A missing metric is recorded as `null`/unsupported, never as a silent zero, and an overall cache hit rate alone never qualifies as `cpu_hit` evidence.
+
 ## 3. State accounting
 
 Cache/state footprint must be measured from the serving runtime or profiler rather than inferred only from model formulas.

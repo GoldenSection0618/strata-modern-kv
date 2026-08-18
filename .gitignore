@@ -57,3 +57,4 @@ tmp_*.sbatch
 
 # Experiment run artifacts (regenerated on every run)
 experiments/modern-kv-state-bottleneck/results/exp*/
+experiments/modern-kv-state-bottleneck/results/sglang/

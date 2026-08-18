@@ -273,3 +273,11 @@ state behavior
 ```
 
 统一 measurement definitions 见 [00-measurement-conventions.md](00-measurement-conventions.md)。
+
+## 14. 执行后端
+
+本实验可在两条执行路径上运行（evidence 不可互换）：legacy vLLM 路径与显式 SGLang / HiCache 路径（installed commit `4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63`，仅通过公开 HTTP/Prometheus 边界驱动）。SGLang 路径的 Exp3 负载驱动是**并发 HTTP 请求**（`code/sglang_hicache/load_driver.py`），不做 in-process 同步引擎多线程调用；per-request queueing/service/TTFT 分离见 [06-sglang-execution-path.md](06-sglang-execution-path.md) §8。
+
+**SGLang 路径的 cache-residency 语义（Exp3）**：单条 warm 过的共享 prefix 不适合并发负载窗口（第一个请求 host restore，之后并发请求全部变 GPU hit）。SGLang 路径改用**确定性前缀池**：`prefix_pool_size` 个互不相同的前缀族按 round-robin 确定性排入负载窗口；`cpu_hit` 先 warm 全部族、再施加 L1 压力使其整体 evict 到 host，使正式负载窗口内存在大量可独立 restore 的 host prefix；`gpu_hit` 保持有界池并校验其适配观测 L1 容量。每个负载点记录 per-request device/host tier 计数与比例，并按文档化阈值（`hit_dominance_threshold`，默认 0.8）判定支配性：请求的 residency 不占支配地位（例如 mostly-GPU 的负载点请求为 `cpu_hit`）时标为 `unsupported`，绝不静默改标。`prefix_pool_size` 与阈值固定在 metadata 与 sbatch（`PREFIX_POOL_SIZE`/`HIT_DOMINANCE_THRESHOLD`）。
+
+状态见 [05-current-status.md](05-current-status.md)。每条报告的曲线必须记录 runtime、commit/version 与 validation evidence。

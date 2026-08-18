@@ -1,153 +1,116 @@
 # Experiment Suite Current Status
 
-> 状态快照：2026-08-09 17:00 GMT+8（Asia/Shanghai）。基于服务器真实文件核对。
-> 设计文档见 `docs/00`–`docs/04`；Exp4 实现细节见 `code/EXP4_IMPLEMENTATION.md`。
+> 核验快照：2026-08-18（Asia/Shanghai）。结论仅基于服务器上的
+> `validation.json`、`summary.json`、raw 数据和 Slurm 退出状态；已完成的
+> Slurm 作业并不自动等同于有效测量。
+>
+> 设计见 `00`–`04`，SGLang / HiCache 的配置和证据规则见
+> `06-sglang-execution-path.md`。
 
-## 0. 一句话总结
+## 0. 当前结论
 
-**只有 recompute 模式的测量数据是真实可用的（exp1 4 点 + exp2 5 点）；gpu_hit / cpu_hit 全部因 stats 采集问题验证门 FAILED、无测量数据；exp3 只有一个失败的冒烟测试；exp4 分析脚本已就绪并跑通，但输入数据残缺。**
+SGLang / HiCache 是 Exp1–3 的主证据路径，固定运行环境为
+`envs/sglang-hicache-cu129-torch211`，安装提交为
+`4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63`，Qwen 的正式 HiCache 配置为
+`ratio=3 / direct / page_first_direct`。
 
----
+- **Qwen3.5-9B：Exp1、Exp2、Exp3 均已有完整有效的 SGLang 数据。**
+  Exp1 为 12/12，Exp2 为 13/13，Exp3 primary 与两个 control 均通过各自
+  validation / strict gate。
+- **Gemma 4 12B：32K 需 2×A100 TP=2，Exp1 仅 10/12、Exp2 仅 5/13 有效，
+  Exp3 仅完成单请求 smoke。** 其余结果保留为失败或 unsupported 证据，不能
+  用于论文曲线或跨模型结论。
+- **vLLM 是 legacy/reference 路径。** 其中只有 Qwen recompute 的历史结果
+  可用；cache-hit 验证仍受 V1 stats 采集限制，不能与 SGLang 结果混用。
 
-## 1. 代码与 Git 状态
+当前没有本实验正在运行或排队的 Slurm 作业。
 
-分支 `feat/exp1-implementation`，未 push。
+## 1. Qwen3.5-9B：可报告的 SGLang 数据
 
-| 提交 | 说明 |
-|---|---|
-| `24b96a1` | exp1/exp2 可在 A100 + vLLM 0.26 跑通（flashinfer/spawn/max_num_seqs 修复） |
-| `ff60752` | 强制 spawn 避免 CUDA fork 崩溃 |
-| `d6e5060` | exp3 代码 + docs |
-| `3357adb` | **Exp4**：synthesis + figures |
-| `5e449eb` | **Exp4**：实现笔记文档 |
-
-**工作区有 7 个未提交改动（另一个会话修改，非本会话）**：
-
-| 文件 | 改动内容 |
-|---|---|
-| `profiling/vllm_stats.py` | **重写**：patch `engine_core.get_output()` 捕获 SchedulerStats（替代找不到 KVCacheManager 的旧方案）；prefix 统计按 drain 语义客户端累加 |
-| `runners/vllm_runner.py` | 引擎加 `disable_log_stats=False`（vLLM 0.26 默认 True，stats 为 None）；warmup 日志改累计值 |
-| `validate.py` | hit 检查改 before/after delta 逻辑；cpu_hit 增加 eviction events 判据 |
-| `profiling/load_driver.py` | ThreadPoolExecutor 按 concurrency_ceiling 建专用池（修复默认池封顶）；active_concurrency_mean 改用 Little's law |
-| `run_exp3.py` | control mode 支持 FROZEN_RATES（按位置选 low/sat/overload） |
-| `run_exp3.sbatch` / `submit_exp3.sh` | FROZEN_RATES 参数全链路贯通 |
-
-⚠️ **这些改动尚未提交，也未经新代码实际运行验证**（冒烟测试 1269314 跑的是旧代码，日志仍为旧格式）。
-
----
-
-## 2. Exp1：Context Length Scaling（qwen）
-
-设计：4096/8192/16384/32768 × recompute/gpu_hit/cpu_hit × 10 reps，prefix 固定 50%。
-
-| context | recompute | gpu_hit | cpu_hit |
+| 实验 | 覆盖 | 有效性 | 证据 / 产物 |
 |---|---|---|---|
-| 4096 | ✅ summary + 10 raw | ❌ validation FAILED | ❌ validation FAILED |
-| 8192 | ✅ summary + 10 raw | ❌ validation FAILED | ❌ validation FAILED |
-| 16384 | ✅ summary + 10 raw | ❌ 无输出（任务 FAILED） | ❌ 无输出（任务 FAILED） |
-| 32768 | ✅ summary + 10 raw | ❌ 无输出（任务 FAILED） | ❌ 无输出（任务 FAILED） |
+| Exp1：context scaling | 4K / 8K / 16K / 32K × recompute / gpu_hit / cpu_hit | **12/12 PASS** | formal jobs `1293813`–`1293824`；每项 `validation.json: all_passed=true` |
+| Exp2：shared-prefix scaling | 32K、0 / 25 / 50 / 75 / 87.5%（0% 仅 recompute） | **13/13 PASS** | formal jobs `1293825`–`1293837`；每项 `validation.json: all_passed=true` |
+| Exp3：request-rate scaling | 32K、50% prefix；primary cpu_hit + recompute / gpu_hit controls | **通过** | primary `1293163` + gate `1293164`；controls `1293758` / `1293759` + gates `1293760` / `1293761` |
 
-**可用数据**：4 个 recompute summary（median TTFT 282.7 / 564.7 / 1175.6 / 2609.9 ms）+ 40 个 raw rep。
+Exp1/2 的提交清单为
+`results/sglang/exp12-pipelines/20260812T160717Z-exp1-exp2-qwen/jobs.txt`。
+作业在 A100 `smtg5001` 上以 `afterok` 串行执行，避免同节点 CPU、DRAM 与
+HiCache 路径互相干扰。
 
-**问题**：gpu_hit/cpu_hit 的 validation `gpu_resident_hit` / `cpu_resident_hit` 恒 FAILED（`queries=0, hits=0`），测量被中止 → 无 summary、无 raw。4096/8192 的目录里只有 metadata + validation.json；16384/32768 任务本身也 FAILED（CUDA fork 问题，已被 ff60752 修复）。
+Qwen Exp3 的 primary `cpu_hit` 以及两个 frozen-rate control 都通过严格门禁；
+primary 的七个归一化负载点也都通过 residency-dominance 判定。因此三组 Qwen
+SGLang 数据可进入后续的处理和作图阶段。
 
-⚠️ **注意**：之前 sacct 显示的 "COMPLETED"（如 1269283/1269284）只是 python 退出码 0——验证门失败后测量中止，**并没有产出数据**。所有 gpu_hit/cpu_hit 数据点实际全部缺失。
+一个可复核的 32K / 50% prefix 对比是：recompute median TTFT `2635.663 ms`、
+gpu_hit `1428.541 ms`、cpu_hit `1546.407 ms`。完整数字必须继续从对应 run
+目录内的 `summary.json` 与 raw 数据生成，不应手工复制到图表脚本。
 
-**root cause（另一个会话已定位）**：vLLM 0.26 V1 引擎 `disable_log_stats=True` 默认 + `KVCacheManager` 内部对象在 EngineCore 子进程、客户端访问不到 → stats 全空。修复方案已在工作区（见 §1），未验证。
+## 2. Gemma 4 12B：已完成、无效与阻塞
 
----
+### 2.1 固定可运行配置
 
-## 3. Exp2：Shared-Prefix Scaling（qwen）
+Gemma 的单张 A100 在本工作负载上最多约容纳 29,248 tokens，不能覆盖 32K
+设计点。有效的启动配置是 **2×A100、TP=2、`MEM_FRACTION=0.75`**；`0.85`
+曾在 NCCL all-reduce 分配额外 256 MB 时失败。该配置已通过 32K 单请求
+cpu_hit validation（job `1294801`）。
 
-设计：32768 ctx × 0/25/50/75/87.5% prefix × recompute/gpu_hit/cpu_hit（0% 只跑 recompute）。
+`/v1/tokenize` 曾因 Gemma checkpoint 的 `tokenizer_config.json` 中 sentinel
+`model_max_length` 超出 ORJSON 64-bit 范围而返回 500。runner 现在优先使用
+公开 endpoint，出现该特定失败时才延迟加载同一 checkpoint 的本地
+`AutoTokenizer` 生成 exact token ids；该兼容路径已经通过纯 Python 单元测试。
 
-| prefix ratio | recompute | gpu_hit | cpu_hit |
-|---|---|---|---|
-| 0% | ✅ summary + 10 raw | —（设计跳过） | —（设计跳过） |
-| 25% | ✅ summary + 10 raw | ❌ 任务 FAILED | ❌ validation FAILED |
-| 50% | ✅ summary + 10 raw | ❌ 任务 FAILED | ❌ validation FAILED |
-| 75% | ✅ summary + 10 raw | ❌ 任务 FAILED | ❌ validation FAILED |
-| 87.5% | ✅ summary + 10 raw | ❌ validation FAILED | ❌ validation FAILED |
+### 2.2 Exp1 / Exp2 的正式批次
 
-**可用数据**：5 个 recompute summary + 50 个 raw rep。
+| 实验 | 已完成 Slurm 作业 | 有效点 | 不可报告点 |
+|---|---|---:|---|
+| Exp1 | `1294881`–`1294896` | **10/12** | 32K `gpu_hit`、32K `cpu_hit` |
+| Exp2 | `1294897`–`1294909` | **5/13** | 所有非零 prefix ratio 的 gpu_hit / cpu_hit（8 点） |
 
-**问题**：与 Exp1 相同——所有 gpu_hit/cpu_hit 无测量数据（验证门 FAILED 或任务崩溃）。
+对应提交清单：
+`results/sglang/exp12-pipelines/20260812T192943Z-exp1-exp2-gemma/jobs.txt`。
+所有作业均正常退出，但不通过 validation 的点仍是无效数据：
 
----
+- 失败点的 tier evidence 本身存在（GPU hit / host hit 均可验证）；
+- 失败统一来自 `prefix_consistency`：reference output token 为 `805`，
+  cache-hit 请求为 `236779`；
+- 因此这些结果没有被重标、没有被零填充，也没有用于任何汇总。
 
-## 4. Exp3：Request-Rate Scaling（qwen）
+当前只确认到输出一致性失败这一观测，**尚未把它归因于采样参数、缓存语义或
+TP 行为中的任何一种**。修复前必须先缩小原因并在一个 32K cache-hit validation
+点上重新验证，不能直接重跑整批实验。
 
-**状态**：只有一次冒烟测试 `results/exp3/qwen/8192-cpu_hit/`（任务 1269314，COMPLETED 退出码 0），validation FAILED、无 summary、无 raw。**正式实验未跑，当前提交任务也跑不出有效数据（见下方前置条件）。**
+### 2.3 Exp3 状态
 
-### 当前可跑性（2026-08-09 核对）
+Gemma TP=2 的单请求 Exp3 smoke（`1294801`）通过完整 validation，证明 32K
+启动、tokenization fallback 与孤立 host-hit 路径均可用。但是它的七个并发
+load-point 都因 TP 聚合后没有可判定的 device/host tier ratio 而被标为
+`unsupported`（`residency_dominance_ok=false`）。这些 TTFT/throughput 数值
+不是 Gemma Exp3 正式结果。
 
-| 模式 | 可跑性 | 说明 |
-|---|---|---|
-| recompute（control） | ✅ 能出有效数据 | 跳过 cache-hit 验证门，不依赖 stats（exp1/2 已证实） |
-| gpu_hit（control） | ❌ 大概率无数据 | 依赖验证门通过；新 stats 修复未实际验证 |
-| cpu_hit（primary） | ❌ 必然无数据 | 三个障碍叠加，见下 |
+Gemma 的下一步有两个独立前置条件：先解决 32K cache-hit 的
+`prefix_consistency`，再使 TP=2 的并发窗口正确汇总 per-tier evidence；两者
+完成并各自通过最小验证后，才重提受影响的 Exp1/2 hit 点与 Exp3 正式 sweep。
 
-**cpu_hit 的三个障碍（按顺序）**：
+## 3. legacy vLLM 状态
 
-1. **验证门未验证**：冒烟测试 1269314 跑的是旧代码（日志旧格式 `Warmup: no prefix cache hit detected`）；新修复（patch `get_output()` + `disable_log_stats=False`）还没跑过一次。直接提交大概率重复冒烟结果，浪费 GPU 任务（sbatch 限时 2h）。
-2. **KV offload 未激活（确定）**：`run_exp3.sbatch` 中 `KV_OFFLOAD="${KV_OFFLOAD:-0}"` 默认 0 → 不传 `--kv-offloading-size` → vLLM `vllm/v1/kv_offload/` 根本没启用。无 offload 则 cpu_hit 的 warmup→evict→restore 链路第一步就断。
-3. **eviction filler 填不满 KV cache**：`evict_prefix_to_cpu` 只发 8×4096=32K tokens，而冒烟日志显示 KV cache 容量 **471,258 tokens** → 不会触发 eviction（`preempted_reqs=0` 已证实）。此问题在 `vllm_runner.py`，exp1/2/3 的 cpu_hit 全受影响。
+vLLM 0.26.0 路径只保留为历史 reference：Qwen Exp1 的四个 recompute 点和
+Exp2 的五个 recompute 点有原始结果。其 gpu_hit/cpu_hit 无有效结果，因为 V1
+engine 的 `KVCacheManager` 位于 EngineCore 子进程，旧 stats collector 无法读取
+prefix-cache 计数，validation 因而失败。SGLang 与 vLLM 的证据来源不可互换，
+不得将两条路径的数据拼成同一条 cache-hit 曲线。
 
-**跑 exp3 的前置顺序**（避免浪费 GPU）：
+## 4. 后续顺序
 
-1. 新代码（7 文件未提交改动）先跑一次 **gpu_hit 单点冒烟**（最小配置），确认验证门通过；
-2. 以 `KV_OFFLOAD=<GB>`（如 8192 MB 量级）提交 cpu_hit，确认 eviction 真的触发（`preempted_hits` / `kv_eviction_events` 非零），必要时加大/修正 filler 逻辑；
-3. 之后才全量：`bash submit_exp3.sh qwen primary` → capacity calibration → 再用 `FROZEN_RATES` 跑 recompute/gpu_hit control（工作区代码已支持）。
+1. 对 Gemma 的 32K cache-hit 输出一致性做最小定向诊断和 validation 重试；
+2. 修复后仅重跑 Exp1 的 2 个无效点和 Exp2 的 8 个无效 hit 点；
+3. 为 Gemma TP=2 完成 Exp3 tier-metric 聚合，再运行一次 smoke，最后才提交正式 load sweep；
+4. 当两模型对应数据均通过 validation 后，运行 Exp4 synthesis 和绘图。
 
-**当前 sbatch 已具备**：`KV_OFFLOAD` 环境变量贯通（`--kv-offloading-size`）、`FROZEN_RATES` 贯通（`--skip-calibration --frozen-rates`）、`CONTROL=1`（`--control-mode`）、flashinfer/spawn 修复已内置。
+## 5. 关键路径
 
----
-
-## 5. Exp4：Cross-Model Synthesis（分析脚本）
-
-**代码状态**：✅ 已实现并提交（`3357adb` + `5e449eb`），纯标准库 synthesis + matplotlib figures（未装 matplotlib）。
-
-**已用真实数据验证**：synthesis 正确解析 exp1 4 点 + exp2 5 点，正式输出已生成到 `results/exp4/processed/`：
-
-| 输出 | 行数 | 说明 |
-|---|---|---|
-| `context_scaling.csv` | 4 | 只有 recompute（hit 数据缺失） |
-| `reuse_benefit.csv` | 5 | 只有 recompute 列，benefit/speedup 全空 |
-| `load_sensitivity.csv` | 0 | exp3 未跑 |
-| `bottleneck_composition.csv` | 3 | 只有 recompute TTFT，`parts_available=False` |
-| `synthesis_report.json` | — | 数据可用性记录 |
-
-**当前能力**：只能出 recompute 单模式的 TTFT 曲线；跨模型对比缺 Gemma 4 数据。
-
----
-
-## 6. 总体阻塞与后续路线
-
-### 核心阻塞（一个，影响 exp1/2/3 的 hit 模式）
-> **vLLM 0.26 stats 采集不可用** → gpu_hit/cpu_hit 验证门恒 FAILED → 无任何 hit 测量数据。
-
-根因链：`disable_log_stats=True`（默认）→ SchedulerStats 不发；`KVCacheManager` 在 EngineCore 子进程、客户端路径找不到 → prefix stats 恒 0。
-
-工作区已有修复（另一个会话）：`disable_log_stats=False` + patch `get_output()` 捕获 SchedulerStats + validate delta 逻辑。**下一步：跑一次新代码的 gpu_hit 冒烟，确认验证门通过。**
-
-### 次生问题
-- eviction filler 量不足：`evict_prefix_to_cpu` 只发 8×4096=32K tokens，而 KV cache 有 471K tokens，填不满、不会触发 eviction（`preempted_reqs=0` 证实）。且 `kv_offloading_size` 默认 0 → KV offload 未激活（另一个会话已确认 vllm/v1/kv_offload 需要 KVTransferConfig 激活）。
-- `active_concurrency_mean` 旧公式量纲错误（已修，未验证）。
-
-### 数据补齐顺序建议
-1. 提交并冒烟验证另一个会话的 7 个文件改动（gpu_hit 单点）
-2. 重跑 exp1 gpu_hit/cpu_hit 4 点（16384/32768 需要确认 eviction 修复）
-3. 重跑 exp2 gpu_hit/cpu_hit 4 点
-4. 跑 exp3（先 calibration 后 control）
-5. 跑 Gemma 4（exp1/2/3 同构）
-6. 重跑 `exp4_synthesis.py` → 自动填充全部跨模型指标 → 装 matplotlib 出图
-
----
-
-## 7. 数据文件清单（服务器路径）
-
-- 根目录：`/share01/hpc/humxlab_intern/yanglihan/dl-stack/projects/strata-modern-kv/experiments/modern-kv-state-bottleneck/`
-- 结果：`results/exp1|exp2|exp3|exp4/`
-- 日志：`~/yanglihan/logs/ylh-*.out/.err`
-- 模型：`/share01/hpc/humxlab_intern/yanglihan/dl-stack/cache/huggingface/models--Qwen--Qwen3.5-9B`
-- 环境：`~/yanglihan/dl-stack/envs/qwen/`（vLLM 0.26.0，无 matplotlib/pandas）
+- 实验根目录：`/share01/hpc/humxlab_intern/yanglihan/dl-stack/projects/strata-modern-kv/experiments/modern-kv-state-bottleneck/`
+- SGLang 结果：`results/sglang/exp1|exp2|exp3/`
+- SGLang 实现：`code/sglang_hicache/`
+- canonical 环境方案：`code/envs/sglang/SGLANG_ENV_PLAN.md`
+- Slurm 日志：`/share01/hpc/humxlab_intern/yanglihan/logs/ylh-*.out/.err`

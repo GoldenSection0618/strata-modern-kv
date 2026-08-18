@@ -206,3 +206,7 @@ Experiment 1 固定 reuse ratio 并改变 context length，研究 long-context s
 Experiment 2 固定 context length 并改变 reuse ratio，研究 prefix reuse 的计算收益与 state-restore 代价。
 
 统一指标和 cache-residency 术语见 [00-measurement-conventions.md](00-measurement-conventions.md)。
+
+## 13. 执行后端
+
+本实验可在两条执行路径上运行（evidence 不可互换）：legacy vLLM 路径与显式 SGLang / HiCache 路径（installed commit `4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63`，仅通过公开 HTTP/Prometheus 边界驱动）。SGLang 路径的 residency 语义、验证证据与提交方式见 [06-sglang-execution-path.md](06-sglang-execution-path.md)；状态见 [05-current-status.md](05-current-status.md)。每条报告的曲线必须记录 runtime、commit/version 与 validation evidence。
